@@ -333,7 +333,7 @@ def copy_notice_files(project_dir, publish_dir):
         if source.exists():
             shutil.copy2(source, publish_dir / name)
 
-    libre_dir = project_dir.parent / "github" / "LibreHardwareMonitor-master"
+    libre_dir = project_dir / "LibreHardwareMonitor-master"
     for name in ("LICENSE", "THIRD-PARTY-NOTICES.txt"):
         source = libre_dir / name
         if source.exists():

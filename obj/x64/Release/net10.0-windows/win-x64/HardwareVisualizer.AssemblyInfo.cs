@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyCopyrightAttribute("Copyright (c) Brian E. Toon 2026")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+63e8d1a38f18a32d1096a4e42bed83dcb4e879ec")]
 [assembly: System.Reflection.AssemblyProductAttribute("HardwareVisualizer")]
 [assembly: System.Reflection.AssemblyTitleAttribute("HardwareVisualizer")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

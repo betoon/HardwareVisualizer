@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -17,8 +17,24 @@
     <FileVersion>1.0.0.0</FileVersion>
   </PropertyGroup>
 
+  <!--
+    LibreHardwareMonitor-master now lives inside this project folder.
+    Without this exclusion, the SDK's default recursive glob would pull
+    its .cs files (including its WinForms UI code) directly into this
+    WPF project's own compilation, causing missing-type errors and
+    duplicate-type warnings. It should only be consumed via the
+    ProjectReference below.
+  -->
   <ItemGroup>
-    <ProjectReference Include="..\github\LibreHardwareMonitor-master\LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj"
+    <Compile Remove="LibreHardwareMonitor-master\**" />
+    <EmbeddedResource Remove="LibreHardwareMonitor-master\**" />
+    <None Remove="LibreHardwareMonitor-master\**" />
+    <Page Remove="LibreHardwareMonitor-master\**" />
+    <ApplicationDefinition Remove="LibreHardwareMonitor-master\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="LibreHardwareMonitor-master\LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj"
                       SetTargetFramework="TargetFramework=net10.0" />
   </ItemGroup>
 

@@ -230,17 +230,17 @@
                         <Button Content="Start Baseline" Click="StartBaseline_Click"/>
                         <Button Content="Compare" Click="CompareBaseline_Click"/>
                         <Button Content="Mini Monitor" Click="MiniMonitor_Click"/>
-                        <TextBlock Text="Temp" VerticalAlignment="Center" Foreground="#9aa8b8" Margin="4,0,6,8"/>
-                        <ComboBox x:Name="TemperatureUnitComboBox" Width="120" SelectionChanged="TemperatureUnitComboBox_SelectionChanged" ToolTip="Changes displayed temperatures between Celsius and Fahrenheit.">
-                            <ComboBoxItem Content="Celsius" IsSelected="True"/>
-                            <ComboBoxItem Content="Fahrenheit"/>
-                        </ComboBox>
+                        <Button Content="Event Viewer" Click="EventViewer_Click" ToolTip="Open the Windows Event Viewer to inspect system and application logs."/>
+                        <Button Content="Registry Editor" Click="RegistryEditor_Click" ToolTip="Open the Windows Registry Editor. Administrator approval may be required."/>
                         <TextBlock x:Name="LastUpdateText" VerticalAlignment="Center" Foreground="#9aa8b8" Margin="0,0,0,8"/>
                     </WrapPanel>
                     <Expander x:Name="SettingsExpander" Header="Settings" IsExpanded="True" Foreground="#e8edf4" HorizontalAlignment="Right">
                         <Border Background="#121922" BorderBrush="#344155" BorderThickness="1" CornerRadius="8" Padding="10,8,2,0" Margin="0,2,0,0">
                             <WrapPanel>
-                                <TextBlock Text="Theme" VerticalAlignment="Center" Foreground="#9aa8b8" Margin="0,0,6,8"/>
+                                <TextBlock Text="Temp Unit" VerticalAlignment="Center" Foreground="#9aa8b8" Margin="0,0,6,8"/>
+                                <Button x:Name="CelsiusButton" Content="°C" Width="44" Click="TemperatureUnitButton_Click" ToolTip="Show temperatures in Celsius."/>
+                                <Button x:Name="FahrenheitButton" Content="°F" Width="44" Click="TemperatureUnitButton_Click" ToolTip="Show temperatures in Fahrenheit."/>
+                                <TextBlock Text="Theme" VerticalAlignment="Center" Foreground="#9aa8b8" Margin="4,0,6,8"/>
                                 <ComboBox x:Name="ThemeComboBox" SelectionChanged="ThemeComboBox_SelectionChanged" ToolTip="Changes the dashboard color style.">
                                     <ComboBoxItem Content="Cool" IsSelected="True"/>
                                     <ComboBoxItem Content="Contrast"/>

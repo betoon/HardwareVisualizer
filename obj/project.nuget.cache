@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "A0ao8gkRv14=",
+  "dgSpecHash": "vi+g5FpnC40=",
   "success": true,
-  "projectFilePath": "C:\\Users\\betoo\\Documents\\Codex\\my_programs\\HardwareVisualizer\\HardwareVisualizer.csproj",
+  "projectFilePath": "C:\\Users\\betoo\\Documents\\GitHub\\HardwareVisualizer\\HardwareVisualizer.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\betoo\\.nuget\\packages\\blacksharp.core\\1.1.0\\blacksharp.core.1.1.0.nupkg.sha512",
     "C:\\Users\\betoo\\.nuget\\packages\\diskinfotoolkit\\2.1.1\\diskinfotoolkit.2.1.1.nupkg.sha512",
@@ -28,7 +28,10 @@
     "C:\\Users\\betoo\\.nuget\\packages\\runtime.osx-x64.runtime.native.system.io.ports\\10.0.9\\runtime.osx-x64.runtime.native.system.io.ports.10.0.9.nupkg.sha512",
     "C:\\Users\\betoo\\.nuget\\packages\\system.io.filesystem.accesscontrol\\5.0.0\\system.io.filesystem.accesscontrol.5.0.0.nupkg.sha512",
     "C:\\Users\\betoo\\.nuget\\packages\\system.io.ports\\10.0.9\\system.io.ports.10.0.9.nupkg.sha512",
-    "C:\\Users\\betoo\\.nuget\\packages\\system.management\\10.0.9\\system.management.10.0.9.nupkg.sha512"
+    "C:\\Users\\betoo\\.nuget\\packages\\system.management\\10.0.9\\system.management.10.0.9.nupkg.sha512",
+    "C:\\Users\\betoo\\.nuget\\packages\\microsoft.netcore.app.runtime.win-x64\\10.0.10\\microsoft.netcore.app.runtime.win-x64.10.0.10.nupkg.sha512",
+    "C:\\Users\\betoo\\.nuget\\packages\\microsoft.windowsdesktop.app.runtime.win-x64\\10.0.10\\microsoft.windowsdesktop.app.runtime.win-x64.10.0.10.nupkg.sha512",
+    "C:\\Users\\betoo\\.nuget\\packages\\microsoft.aspnetcore.app.runtime.win-x64\\10.0.10\\microsoft.aspnetcore.app.runtime.win-x64.10.0.10.nupkg.sha512"
   ],
   "logs": []
 }

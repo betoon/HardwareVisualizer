@@ -298,7 +298,7 @@ public partial class MainWindow : Window
     {
         SelectComboItem(ThemeComboBox, selectedTheme);
         SelectComboItem(WorkloadComboBox, selectedWorkload);
-        SelectComboItem(TemperatureUnitComboBox, TemperatureUnitDisplayName(selectedTemperatureUnit));
+        ApplyTemperatureUnitButtonState();
         CpuWatchBox.Text = cpuWatchThreshold.ToString("0");
         CpuHotBox.Text = cpuHotThreshold.ToString("0");
         GpuWatchBox.Text = gpuWatchThreshold.ToString("0");
@@ -476,6 +476,30 @@ public partial class MainWindow : Window
         UpdateMiniMonitor(currentReadings);
     }
 
+    private void EventViewer_Click(object sender, RoutedEventArgs e)
+    {
+        LaunchWindowsTool("eventvwr.msc", "Event Viewer");
+    }
+
+    private void RegistryEditor_Click(object sender, RoutedEventArgs e)
+    {
+        LaunchWindowsTool("regedit.exe", "Registry Editor");
+    }
+
+    private void LaunchWindowsTool(string fileName, string displayName)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(fileName) { UseShellExecute = true });
+            StatusText.Text = $"Opened {displayName}.";
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Could not open {displayName}.";
+            MessageBox.Show(this, $"Could not open {displayName}:\n{ex.Message}", "Hardware Visualizer", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void QuietMode_Changed(object sender, RoutedEventArgs e)
     {
         if (!IsLoaded || refreshTimer is null || loadingSettings)
@@ -528,15 +552,29 @@ public partial class MainWindow : Window
         RefreshSensors();
     }
 
-    private void TemperatureUnitComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void TemperatureUnitButton_Click(object sender, RoutedEventArgs e)
     {
-        string unitName = ((sender as ComboBox)?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Celsius";
-        selectedTemperatureUnit = unitName.StartsWith("F", StringComparison.OrdinalIgnoreCase) ? "F" : "C";
+        selectedTemperatureUnit = ReferenceEquals(sender, FahrenheitButton) ? "F" : "C";
         MainWindowDisplay.TemperatureUnit = selectedTemperatureUnit;
+        ApplyTemperatureUnitButtonState();
         if (!IsLoaded || loadingSettings)
             return;
         SaveSettings();
         RefreshSensors();
+    }
+
+    private void ApplyTemperatureUnitButtonState()
+    {
+        bool isFahrenheit = selectedTemperatureUnit == "F";
+        HighlightUnitButton(CelsiusButton, !isFahrenheit);
+        HighlightUnitButton(FahrenheitButton, isFahrenheit);
+    }
+
+    private static void HighlightUnitButton(Button button, bool isActive)
+    {
+        button.Background = Brush(isActive ? "#6ee7f9" : "#202a36");
+        button.Foreground = Brush(isActive ? "#0f141b" : "#e8edf4");
+        button.BorderBrush = Brush(isActive ? "#6ee7f9" : "#344155");
     }
 
     private void WorkloadComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -2572,11 +2610,6 @@ public partial class MainWindow : Window
                || string.Equals(unit, "Fahrenheit", StringComparison.OrdinalIgnoreCase)
             ? "F"
             : "C";
-    }
-
-    private static string TemperatureUnitDisplayName(string unit)
-    {
-        return NormalizeTemperatureUnit(unit) == "F" ? "Fahrenheit" : "Celsius";
     }
 
     private static double ChangeFloor(SensorReading reading)
