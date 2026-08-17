@@ -10,6 +10,7 @@ using System.IO;
 using System.Text;
 using System.Diagnostics;
 using Microsoft.Win32;
+using System.Media;
 using LibreHardwareMonitor.Hardware;
 
 namespace HardwareVisualizer;
@@ -25,6 +26,16 @@ public partial class MainWindow : Window
     private readonly HashSet<string> pinnedSensors = new();
     private readonly List<AlertEntry> alertLog = new();
     private readonly HashSet<string> activeAlerts = new();
+    private readonly Dictionary<string, DateTime> lastAlertTimes = new();
+    private StackPanel? historicalRowsPanel;
+    private TextBox? historicalSearchBox;
+    private ComboBox? historicalTypeFilter;
+    private ComboBox? historicalRangeFilter;
+    private CheckBox? historyCaptureCheckBox;
+    private CheckBox? alertMonitoringCheckBox;
+    private CheckBox? alertSoundCheckBox;
+    private DateTime lastHistoricalWrite = DateTime.MinValue;
+    private DateTime lastHistoryPrune = DateTime.MinValue;
     private AnalysisView? analysisView;
     private NetworkDashboardView? networkView;
     private MiniMonitorWindow? miniMonitor;
@@ -48,6 +59,9 @@ public partial class MainWindow : Window
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "HardwareVisualizer",
         "settings.json");
+    private static readonly string HistoryPath = System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "HardwareVisualizer", "sensor-history.jsonl");
 
     private static readonly string[] CategoryOrder =
     [
@@ -105,6 +119,7 @@ public partial class MainWindow : Window
         SensorTabs.Items.Add(new TabItem { Header = "Analysis", Content = Scroll(analysisView.Root) });
         networkView = CreateNetworkDashboardView();
         SensorTabs.Items.Add(new TabItem { Header = "Network Dashboard", Content = Scroll(networkView.Root) });
+        SensorTabs.Items.Add(new TabItem { Header = "Historical Log", Content = CreateHistoricalLogView() });
 
         foreach (string category in CategoryOrder)
         {
@@ -114,6 +129,90 @@ public partial class MainWindow : Window
         }
 
         ApplyCompactMode();
+    }
+
+    private ScrollViewer CreateHistoricalLogView()
+    {
+        var root = new StackPanel { Margin = new Thickness(12) };
+        AddSectionTitle(root, "Historical Sensor Log");
+        root.Children.Add(new TextBlock
+        {
+            Text = "Readings are sampled once per minute and retained for seven days. Filters only affect this view, not collection.",
+            Foreground = Brush("#9aa8b8"), Margin = new Thickness(0, 0, 0, 10), TextWrapping = TextWrapping.Wrap
+        });
+
+        var controls = new WrapPanel { Margin = new Thickness(0, 0, 0, 8) };
+        historicalSearchBox = new TextBox { Width = 220, ToolTip = "Search hardware, sensor name, type, or interpretation." };
+        historicalSearchBox.TextChanged += (_, _) => RefreshHistoricalLogView();
+        controls.Children.Add(new TextBlock { Text = "Search", Foreground = Brush("#9aa8b8"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 8) });
+        controls.Children.Add(historicalSearchBox);
+        historicalTypeFilter = CreateFilterCombo(["All types", "Temperature", "Load", "Fan", "Clock", "Power", "Voltage", "Data", "Throughput"]);
+        historicalTypeFilter.SelectionChanged += (_, _) => RefreshHistoricalLogView();
+        controls.Children.Add(historicalTypeFilter);
+        historicalRangeFilter = CreateFilterCombo(["Last hour", "Last 6 hours", "Last 24 hours", "Last 7 days"]);
+        historicalRangeFilter.SelectionChanged += (_, _) => RefreshHistoricalLogView();
+        controls.Children.Add(historicalRangeFilter);
+        var refreshButton = new Button { Content = "Refresh View" };
+        refreshButton.Click += (_, _) => RefreshHistoricalLogView();
+        controls.Children.Add(refreshButton);
+        var folderButton = new Button { Content = "Open Log Folder" };
+        folderButton.Click += (_, _) => OpenHistoryFolder();
+        controls.Children.Add(folderButton);
+        historyCaptureCheckBox = new CheckBox { Content = "Capture history", IsChecked = true, VerticalAlignment = VerticalAlignment.Center };
+        controls.Children.Add(historyCaptureCheckBox);
+        root.Children.Add(controls);
+
+        var alertControls = new WrapPanel { Margin = new Thickness(0, 0, 0, 10) };
+        alertMonitoringCheckBox = new CheckBox { Content = "Monitor alerts", IsChecked = true, VerticalAlignment = VerticalAlignment.Center };
+        alertSoundCheckBox = new CheckBox { Content = "Sound for new alerts", IsChecked = false, VerticalAlignment = VerticalAlignment.Center };
+        alertControls.Children.Add(alertMonitoringCheckBox);
+        alertControls.Children.Add(alertSoundCheckBox);
+        var acknowledgeButton = new Button { Content = "Acknowledge Current", ToolTip = "Stops repeat alerts until a reading returns to normal." };
+        acknowledgeButton.Click += (_, _) => AcknowledgeCurrentAlerts();
+        alertControls.Children.Add(acknowledgeButton);
+        var clearButton = new Button { Content = "Clear Alert Log" };
+        clearButton.Click += (_, _) => ClearAlertLog();
+        alertControls.Children.Add(clearButton);
+        root.Children.Add(alertControls);
+
+        historicalRowsPanel = new StackPanel();
+        root.Children.Add(historicalRowsPanel);
+        RefreshHistoricalLogView();
+        return Scroll(root);
+    }
+
+    private static ComboBox CreateFilterCombo(IEnumerable<string> choices)
+    {
+        var combo = new ComboBox { Width = 140 };
+        foreach (string choice in choices)
+            combo.Items.Add(new ComboBoxItem { Content = choice });
+        combo.SelectedIndex = 0;
+        return combo;
+    }
+
+    private void OpenHistoryFolder()
+    {
+        string folder = System.IO.Path.GetDirectoryName(HistoryPath)!;
+        Directory.CreateDirectory(folder);
+        Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
+    }
+
+    private void AcknowledgeCurrentAlerts()
+    {
+        DateTime now = DateTime.Now;
+        foreach (string key in activeAlerts)
+            lastAlertTimes[key] = now;
+        StatusText.Text = "Current alerts acknowledged. Repeated notifications are suppressed for five minutes.";
+    }
+
+    private void ClearAlertLog()
+    {
+        if (MessageBox.Show(this, "Clear the in-app alert log for this session?", "Clear Alert Log", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+        alertLog.Clear();
+        activeAlerts.Clear();
+        lastAlertTimes.Clear();
+        RefreshSensors();
     }
 
     private CategoryView CreateCategoryView(string category)
@@ -690,6 +789,7 @@ public partial class MainWindow : Window
             currentReadings = readings;
             UpdateHistory(readings);
             AppendSessionLog(readings);
+            AppendPersistentHistory(readings);
             UpdateAlertLog(readings);
             UpdateSummary(readings);
             UpdateAnalysisTab(readings);
@@ -995,16 +1095,113 @@ public partial class MainWindow : Window
         sessionLog.RemoveAll(entry => entry.Time < cutoff);
     }
 
+    private void AppendPersistentHistory(List<SensorReading> readings)
+    {
+        if (historyCaptureCheckBox?.IsChecked != true || DateTime.Now - lastHistoricalWrite < TimeSpan.FromMinutes(1))
+            return;
+        lastHistoricalWrite = DateTime.Now;
+        try
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(HistoryPath)!);
+            using (var writer = File.AppendText(HistoryPath))
+            {
+                foreach (SensorReading reading in readings)
+                {
+                    var entry = new HistoricalLogEntry(DateTime.Now, reading.Hardware, reading.Name, reading.Type, reading.Value, reading.Unit,
+                        reading.Identifier, InterpretationLabel(reading), InterpretationDetail(reading), SeverityFor(reading));
+                    writer.WriteLine(JsonSerializer.Serialize(entry));
+                }
+            }
+
+            if (DateTime.Now - lastHistoryPrune > TimeSpan.FromHours(1))
+            {
+                lastHistoryPrune = DateTime.Now;
+                PruneHistoricalLog();
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"History logging paused: {ex.Message}";
+        }
+    }
+
+    private static void PruneHistoricalLog()
+    {
+        if (!File.Exists(HistoryPath)) return;
+        DateTime cutoff = DateTime.Now.AddDays(-7);
+        string temporaryPath = HistoryPath + ".tmp";
+        using (var writer = File.CreateText(temporaryPath))
+        {
+            foreach (string line in File.ReadLines(HistoryPath))
+            {
+                try
+                {
+                    HistoricalLogEntry? entry = JsonSerializer.Deserialize<HistoricalLogEntry>(line);
+                    if (entry is not null && entry.Time >= cutoff)
+                        writer.WriteLine(line);
+                }
+                catch { }
+            }
+        }
+        File.Move(temporaryPath, HistoryPath, overwrite: true);
+    }
+
+    private void RefreshHistoricalLogView()
+    {
+        if (historicalRowsPanel is null) return;
+        historicalRowsPanel.Children.Clear();
+        if (!File.Exists(HistoryPath))
+        {
+            historicalRowsPanel.Children.Add(CreateInfoRow("No saved history yet", "Keep Capture history enabled; the first sample is written after sensors refresh."));
+            return;
+        }
+
+        string search = historicalSearchBox?.Text.Trim() ?? "";
+        string type = ((historicalTypeFilter?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "All types");
+        string range = ((historicalRangeFilter?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Last hour");
+        TimeSpan age = range switch { "Last 6 hours" => TimeSpan.FromHours(6), "Last 24 hours" => TimeSpan.FromDays(1), "Last 7 days" => TimeSpan.FromDays(7), _ => TimeSpan.FromHours(1) };
+        DateTime cutoff = DateTime.Now - age;
+
+        var entries = new List<HistoricalLogEntry>();
+        foreach (string line in File.ReadLines(HistoryPath).TakeLast(20000))
+        {
+            try
+            {
+                HistoricalLogEntry? entry = JsonSerializer.Deserialize<HistoricalLogEntry>(line);
+                if (entry is null || entry.Time < cutoff) continue;
+                if (type != "All types" && !entry.Type.Equals(type, StringComparison.OrdinalIgnoreCase)) continue;
+                string haystack = $"{entry.Hardware} {entry.Name} {entry.Type} {entry.Interpretation} {entry.Detail}";
+                if (search.Length > 0 && !haystack.Contains(search, StringComparison.OrdinalIgnoreCase)) continue;
+                entries.Add(entry);
+            }
+            catch { }
+        }
+
+        foreach (HistoricalLogEntry entry in entries.OrderByDescending(item => item.Time).Take(500))
+            historicalRowsPanel.Children.Add(CreateFindingRow(new AnalysisFinding(
+                $"{entry.Interpretation} · {entry.Name}", $"{entry.Time:g} — {entry.Hardware}\n{entry.Detail}", FormatValue(entry.Value, entry.Unit), entry.Severity)));
+        if (entries.Count == 0)
+            historicalRowsPanel.Children.Add(CreateInfoRow("No matching readings", "Try a broader time range, type, or search term."));
+        else if (entries.Count > 500)
+            historicalRowsPanel.Children.Add(CreateInfoRow("Showing newest 500", $"{entries.Count:N0} readings matched. Narrow the filters to see a more specific set."));
+    }
+
     private void UpdateAlertLog(List<SensorReading> readings)
     {
+        if (alertMonitoringCheckBox?.IsChecked != true)
+            return;
         foreach (SensorReading reading in readings)
         {
             int severity = SeverityFor(reading);
             string key = $"{reading.Identifier}:{severity}";
-            if (severity > 0 && activeAlerts.Add(key))
+            bool cooldownElapsed = !lastAlertTimes.TryGetValue(key, out DateTime lastAlert) || DateTime.Now - lastAlert >= TimeSpan.FromMinutes(5);
+            if (severity > 0 && cooldownElapsed && activeAlerts.Add(key))
             {
-                string title = severity >= 2 ? "Hot threshold crossed" : "Watch threshold crossed";
-                alertLog.Add(new AlertEntry(DateTime.Now, title, $"{reading.Hardware} / {reading.Name}", reading.DisplayValue, severity));
+                string title = severity >= 2 ? $"High: {reading.Name}" : $"Watch: {reading.Name}";
+                alertLog.Add(new AlertEntry(DateTime.Now, title, $"{reading.Hardware} / {reading.Name} — {InterpretationDetail(reading)}", reading.DisplayValue, severity));
+                lastAlertTimes[key] = DateTime.Now;
+                if (alertSoundCheckBox?.IsChecked == true)
+                    SystemSounds.Exclamation.Play();
             }
 
             if (severity == 0)
@@ -2896,6 +3093,9 @@ public sealed record AnalysisFinding(string Title, string Detail, string Value, 
 public sealed record SensorLogEntry(DateTime Time, string Hardware, string Name, string Type, double Value, string Unit, string Identifier);
 
 public sealed record AlertEntry(DateTime Time, string Title, string Detail, string Value, int Severity);
+
+public sealed record HistoricalLogEntry(DateTime Time, string Hardware, string Name, string Type, double Value, string Unit,
+    string Identifier, string Interpretation, string Detail, int Severity);
 
 public sealed record RadarMetric(string Label, double Percent, string ValueText);
 
