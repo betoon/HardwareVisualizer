@@ -224,14 +224,33 @@
                         <Button Content="Refresh Now" Click="RefreshNow_Click"/>
                         <Button Content="Save Report" Click="SaveReport_Click"/>
                         <Button Content="Export CSV" Click="ExportCsv_Click"/>
-                        <Button Content="Check Setup" Click="CheckSetup_Click"/>
-                        <Button Content="Direct Check" Click="DirectCheck_Click"/>
-                        <Button Content="Compare Sources" Click="CompareSources_Click"/>
-                        <Button Content="Start Baseline" Click="StartBaseline_Click"/>
-                        <Button Content="Compare" Click="CompareBaseline_Click"/>
                         <Button Content="Mini Monitor" Click="MiniMonitor_Click"/>
-                        <Button Content="Event Viewer" Click="EventViewer_Click" ToolTip="Open the Windows Event Viewer to inspect system and application logs."/>
-                        <Button Content="Registry Editor" Click="RegistryEditor_Click" ToolTip="Open the Windows Registry Editor. Administrator approval may be required."/>
+                        <Button Content="Baseline ▾" Click="ToolbarMenu_Click" ToolTip="Capture a baseline and compare it with current readings.">
+                            <Button.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="Start Baseline" Click="StartBaseline_Click"/>
+                                    <MenuItem Header="Compare with Baseline" Click="CompareBaseline_Click"/>
+                                </ContextMenu>
+                            </Button.ContextMenu>
+                        </Button>
+                        <Button Content="Diagnostics ▾" Click="ToolbarMenu_Click" ToolTip="Check sensor setup and compare available data sources.">
+                            <Button.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="Check Setup" Click="CheckSetup_Click"/>
+                                    <MenuItem Header="Direct Sensor Check" Click="DirectCheck_Click"/>
+                                    <Separator/>
+                                    <MenuItem Header="Compare Sensor Sources" Click="CompareSources_Click"/>
+                                </ContextMenu>
+                            </Button.ContextMenu>
+                        </Button>
+                        <Button Content="Windows Tools ▾" Click="ToolbarMenu_Click" ToolTip="Open useful Windows diagnostic tools.">
+                            <Button.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="Event Viewer" Click="EventViewer_Click" ToolTip="Inspect Windows system and application logs."/>
+                                    <MenuItem Header="Registry Editor" Click="RegistryEditor_Click" ToolTip="Administrator approval may be required."/>
+                                </ContextMenu>
+                            </Button.ContextMenu>
+                        </Button>
                         <TextBlock x:Name="LastUpdateText" VerticalAlignment="Center" Foreground="#9aa8b8" Margin="0,0,0,8"/>
                     </WrapPanel>
                     <Expander x:Name="SettingsExpander" Header="Settings" IsExpanded="True" Foreground="#e8edf4" HorizontalAlignment="Right">

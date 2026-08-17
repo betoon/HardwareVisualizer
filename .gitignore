@@ -1,0 +1,34 @@
+# Visual Studio and local workspace state
+.vs/
+.vscode/
+*.user
+*.suo
+
+# .NET build output and package state
+bin/
+obj/
+artifacts/
+packages/
+*.nupkg
+*.snupkg
+
+# Local SDK, NuGet, and telemetry state
+.appdata/
+.dotnet_home/
+.nuget/
+
+# Generated installer output
+installer/publish/
+installer/output/
+installer/wix/*.wixobj
+installer/wix/*.wixpdb
+
+# Logs and temporary Python files
+*.log
+__pycache__/
+*.py[cod]
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini

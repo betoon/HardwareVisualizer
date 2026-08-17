@@ -1,8 +1,0 @@
-HardwareVisualizer includes and references LibreHardwareMonitorLib.
-
-LibreHardwareMonitor is licensed under the Mozilla Public License 2.0.
-Project source and license notices are kept in:
-..\github\LibreHardwareMonitor-master
-
-When redistributing HardwareVisualizer, keep the LibreHardwareMonitor license
-and third-party notices with the installed application files.

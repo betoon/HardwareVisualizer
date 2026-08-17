@@ -481,6 +481,15 @@ public partial class MainWindow : Window
         LaunchWindowsTool("eventvwr.msc", "Event Viewer");
     }
 
+    private static void ToolbarMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { ContextMenu: { } menu } button)
+        {
+            menu.PlacementTarget = button;
+            menu.IsOpen = true;
+        }
+    }
+
     private void RegistryEditor_Click(object sender, RoutedEventArgs e)
     {
         LaunchWindowsTool("regedit.exe", "Registry Editor");
