@@ -9,6 +9,7 @@ using System.Net.NetworkInformation;
 using System.IO;
 using System.Text;
 using System.Diagnostics;
+using Microsoft.Win32;
 using LibreHardwareMonitor.Hardware;
 
 namespace HardwareVisualizer;
@@ -481,7 +482,13 @@ public partial class MainWindow : Window
         LaunchWindowsTool("eventvwr.msc", "Event Viewer");
     }
 
-    private static void ToolbarMenu_Click(object sender, RoutedEventArgs e)
+    private void SystemEventLog_Click(object sender, RoutedEventArgs e) => LaunchWindowsTool("eventvwr.msc", "System Event Log", "/c:System");
+
+    private void ApplicationEventLog_Click(object sender, RoutedEventArgs e) => LaunchWindowsTool("eventvwr.msc", "Application Event Log", "/c:Application");
+
+    private void ReliabilityMonitor_Click(object sender, RoutedEventArgs e) => LaunchWindowsTool("perfmon.exe", "Reliability Monitor", "/rel");
+
+    private void ToolbarMenu_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button { ContextMenu: { } menu } button)
         {
@@ -492,14 +499,61 @@ public partial class MainWindow : Window
 
     private void RegistryEditor_Click(object sender, RoutedEventArgs e)
     {
-        LaunchWindowsTool("regedit.exe", "Registry Editor");
+        MessageBoxResult result = MessageBox.Show(this,
+            "Registry Editor can change settings required by Windows and your hardware.\n\nExport a key before changing it, and only edit values you understand. Open Registry Editor now?",
+            "Open Registry Editor?", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        if (result == MessageBoxResult.Yes)
+            LaunchWindowsTool("regedit.exe", "Registry Editor");
     }
 
-    private void LaunchWindowsTool(string fileName, string displayName)
+    private void HardwareRegistrySummary_Click(object sender, RoutedEventArgs e)
+    {
+        var report = new StringBuilder();
+        report.AppendLine("Read-only hardware registry summary");
+        report.AppendLine("No registry values were changed.\n");
+        AppendRegistryKey(report, @"HARDWARE\DESCRIPTION\System\BIOS", "SystemManufacturer", "SystemProductName", "BIOSVendor", "BIOSVersion", "BIOSReleaseDate");
+        AppendRegistryKey(report, @"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString", "VendorIdentifier", "~MHz");
+        AppendRegistryKey(report, @"SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName", "ComputerName");
+
+        var viewer = new Window
+        {
+            Title = "Hardware Registry Summary — Read-only", Owner = this, Width = 720, Height = 480,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner, Background = Brush("#0f141b")
+        };
+        viewer.Content = new TextBox
+        {
+            Text = report.ToString(), IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Margin = new Thickness(16), Padding = new Thickness(12), FontFamily = new FontFamily("Consolas"),
+            Foreground = Brush("#e8edf4"), Background = Brush("#171d26"), BorderBrush = Brush("#344155")
+        };
+        viewer.ShowDialog();
+    }
+
+    private static void AppendRegistryKey(StringBuilder report, string path, params string[] valueNames)
+    {
+        report.AppendLine($"HKEY_LOCAL_MACHINE\\{path}");
+        try
+        {
+            using RegistryKey? key = Registry.LocalMachine.OpenSubKey(path, writable: false);
+            if (key is null)
+                report.AppendLine("  Key not available");
+            else
+                foreach (string name in valueNames)
+                    report.AppendLine($"  {name}: {key.GetValue(name) ?? "Not reported"}");
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine($"  Could not read: {ex.Message}");
+        }
+        report.AppendLine();
+    }
+
+    private void LaunchWindowsTool(string fileName, string displayName, string? arguments = null)
     {
         try
         {
-            Process.Start(new ProcessStartInfo(fileName) { UseShellExecute = true });
+            Process.Start(new ProcessStartInfo(fileName, arguments ?? string.Empty) { UseShellExecute = true });
             StatusText.Text = $"Opened {displayName}.";
         }
         catch (Exception ex)
@@ -911,6 +965,7 @@ public partial class MainWindow : Window
             return;
         text.Text = reading is null ? "--" : reading.DisplayValue;
         text.Foreground = reading is null ? Brush("#9aa8b8") : Brush(ColorFor(reading));
+        text.ToolTip = reading is null ? "No matching sensor is currently available." : InterpretationDetail(reading);
     }
 
     private void UpdateHistory(List<SensorReading> readings)
@@ -1852,7 +1907,7 @@ public partial class MainWindow : Window
 
     private void AttachPinToggle(Border border, SensorReading reading)
     {
-        border.ToolTip = "Right-click to pin or unpin this sensor. Pinned sensors stay at the top.";
+        border.ToolTip = $"{InterpretationDetail(reading)}\n\nRight-click to pin or unpin this sensor. Pinned sensors stay at the top.";
         border.MouseRightButtonUp += (_, _) =>
         {
             if (!pinnedSensors.Add(reading.Identifier))
@@ -1896,8 +1951,9 @@ public partial class MainWindow : Window
     private Border CreateSensorRow(SensorReading reading, double scale)
     {
         var grid = new Grid { Margin = new Thickness(0, 0, 0, 8) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(360) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(320) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(100) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
 
         var label = new TextBlock
@@ -1923,6 +1979,18 @@ public partial class MainWindow : Window
         Grid.SetColumn(bar, 1);
         grid.Children.Add(bar);
 
+        var interpretation = new TextBlock
+        {
+            Text = InterpretationLabel(reading),
+            Foreground = Brush(SeverityColor(SeverityFor(reading))),
+            FontWeight = FontWeights.SemiBold,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = InterpretationDetail(reading)
+        };
+        Grid.SetColumn(interpretation, 2);
+        grid.Children.Add(interpretation);
+
         var value = new TextBlock
         {
             Text = reading.DisplayValue,
@@ -1930,7 +1998,7 @@ public partial class MainWindow : Window
             FontWeight = FontWeights.Bold,
             VerticalAlignment = VerticalAlignment.Center
         };
-        Grid.SetColumn(value, 2);
+        Grid.SetColumn(value, 3);
         grid.Children.Add(value);
 
         var border = new Border
@@ -1951,6 +2019,7 @@ public partial class MainWindow : Window
         var panel = new StackPanel();
         panel.Children.Add(new TextBlock { Text = $"{PinPrefix(reading)}{reading.Name}", FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 210 });
         panel.Children.Add(new TextBlock { Text = reading.DisplayValue, FontSize = 20, FontWeight = FontWeights.Bold, Foreground = Brush(ColorFor(reading)), Margin = new Thickness(0, 6, 0, 2), TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 210 });
+        panel.Children.Add(new TextBlock { Text = InterpretationLabel(reading), Foreground = Brush(SeverityColor(SeverityFor(reading))), FontWeight = FontWeights.SemiBold, ToolTip = InterpretationDetail(reading), MaxWidth = 210 });
         panel.Children.Add(new TextBlock { Text = reading.Hardware, Foreground = Brush("#9aa8b8"), TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 210 });
         panel.Children.Add(new TextBlock { Text = $"{reading.Type} | {reading.HardwareType}", Foreground = Brush("#6ee7f9"), FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 210 });
 
@@ -2595,6 +2664,45 @@ public partial class MainWindow : Window
             return reading.Value <= 0 ? 1 : 0;
 
         return 0;
+    }
+
+    private string InterpretationLabel(SensorReading reading)
+    {
+        int severity = SeverityFor(reading);
+        if (severity >= 2) return "High";
+        if (severity == 1) return "Watch";
+        return reading.Type is "Temperature" or "Load" or "Control" or "Level" or "Fan" ? "Normal" : "Info";
+    }
+
+    private string InterpretationDetail(SensorReading reading)
+    {
+        double value = GraphValue(reading);
+        if (reading.Type == "Temperature")
+        {
+            double watch = ContainsAny(reading, "gpu") ? gpuWatchThreshold : cpuWatchThreshold;
+            double hot = ContainsAny(reading, "gpu") ? gpuHotThreshold : cpuHotThreshold;
+            return value >= hot
+                ? $"High: at or above the configured {hot:0} °C hot threshold. Check workload and cooling."
+                : value >= watch
+                    ? $"Worth watching: above the configured {watch:0} °C watch threshold. A sustained rise matters more than one sample."
+                    : $"Normal for the configured limits: below the {watch:0} °C watch threshold.";
+        }
+
+        if (reading.Type is "Load" or "Control" or "Level")
+            return value >= 95
+                ? "Very high utilization. Sustained readings may indicate a bottleneck."
+                : value >= 85
+                    ? "High utilization. Watch whether it stays elevated during normal work."
+                    : "Utilization is below the watch range.";
+        if (reading.Type == "Fan")
+            return value <= 0 ? "No fan speed is reported. This can mean a stopped fan or an unsupported sensor." : "A fan speed is being reported normally.";
+        if (reading.Type == "Clock")
+            return "Informational clock reading. Compare it under load with the component's expected boost range.";
+        if (reading.Type is "Power" or "Voltage" or "Current")
+            return "Informational electrical reading. Safe ranges depend on the exact component and sensor.";
+        if (reading.Type is "Data" or "Throughput")
+            return "Informational activity reading; higher values usually mean more current or accumulated traffic.";
+        return "Informational sensor reading. Hardware-specific limits may apply.";
     }
 
     private static string SeverityColor(int severity)

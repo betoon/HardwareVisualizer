@@ -246,8 +246,13 @@
                         <Button Content="Windows Tools ▾" Click="ToolbarMenu_Click" ToolTip="Open useful Windows diagnostic tools.">
                             <Button.ContextMenu>
                                 <ContextMenu>
-                                    <MenuItem Header="Event Viewer" Click="EventViewer_Click" ToolTip="Inspect Windows system and application logs."/>
-                                    <MenuItem Header="Registry Editor" Click="RegistryEditor_Click" ToolTip="Administrator approval may be required."/>
+                                    <MenuItem Header="Event Viewer Home" Click="EventViewer_Click"/>
+                                    <MenuItem Header="System Event Log" Click="SystemEventLog_Click" ToolTip="Open driver, hardware service, and other Windows system events."/>
+                                    <MenuItem Header="Application Event Log" Click="ApplicationEventLog_Click"/>
+                                    <MenuItem Header="Reliability Monitor" Click="ReliabilityMonitor_Click" ToolTip="Review crashes, failed updates, and stability history."/>
+                                    <Separator/>
+                                    <MenuItem Header="Hardware Registry Summary (Read-only)" Click="HardwareRegistrySummary_Click"/>
+                                    <MenuItem Header="Open Registry Editor..." Click="RegistryEditor_Click" ToolTip="Shows a safety confirmation before opening the editor."/>
                                 </ContextMenu>
                             </Button.ContextMenu>
                         </Button>
