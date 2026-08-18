@@ -22,6 +22,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, CategoryView> categoryViews = new();
     private readonly Dictionary<string, TextBlock> summaryValues = new();
     private readonly Dictionary<string, Queue<double>> history = new();
+    private readonly Dictionary<string, NetworkCounterSample> networkCounterSamples = new();
     private readonly List<SensorLogEntry> sessionLog = new();
     private readonly HashSet<string> pinnedSensors = new();
     private readonly List<AlertEntry> alertLog = new();
@@ -867,7 +868,7 @@ public partial class MainWindow : Window
             .ToList();
     }
 
-    private static List<SensorReading> ReadWindowsNetworkSensors()
+    private List<SensorReading> ReadWindowsNetworkSensors()
     {
         var readings = new List<SensorReading>();
         try
@@ -880,10 +881,23 @@ public partial class MainWindow : Window
                 IPv4InterfaceStatistics stats = adapter.GetIPv4Statistics();
                 string id = Uri.EscapeDataString(adapter.Id);
                 string hardware = adapter.Name;
+                DateTime now = DateTime.UtcNow;
+                double uploadSpeed = 0;
+                double downloadSpeed = 0;
+                if (networkCounterSamples.TryGetValue(adapter.Id, out NetworkCounterSample? previous))
+                {
+                    double elapsed = (now - previous.TimestampUtc).TotalSeconds;
+                    if (elapsed > 0)
+                    {
+                        uploadSpeed = Math.Max(0, stats.BytesSent - previous.BytesSent) / elapsed;
+                        downloadSpeed = Math.Max(0, stats.BytesReceived - previous.BytesReceived) / elapsed;
+                    }
+                }
+                networkCounterSamples[adapter.Id] = new NetworkCounterSample(now, stats.BytesSent, stats.BytesReceived);
                 readings.Add(new SensorReading(hardware, "Data Uploaded", "Data", stats.BytesSent / 1073741824.0, "GB", $"/nic/windows/{id}/data/uploaded", "Network"));
                 readings.Add(new SensorReading(hardware, "Data Downloaded", "Data", stats.BytesReceived / 1073741824.0, "GB", $"/nic/windows/{id}/data/downloaded", "Network"));
-                readings.Add(new SensorReading(hardware, "Upload Speed", "Throughput", 0, "B/s", $"/nic/windows/{id}/throughput/upload", "Network"));
-                readings.Add(new SensorReading(hardware, "Download Speed", "Throughput", 0, "B/s", $"/nic/windows/{id}/throughput/download", "Network"));
+                readings.Add(new SensorReading(hardware, "Upload Speed", "Throughput", uploadSpeed, "B/s", $"/nic/windows/{id}/throughput/upload", "Network"));
+                readings.Add(new SensorReading(hardware, "Download Speed", "Throughput", downloadSpeed, "B/s", $"/nic/windows/{id}/throughput/download", "Network"));
                 double utilization = adapter.Speed > 0 ? Math.Min(100, ((stats.BytesSent + stats.BytesReceived) * 8.0 / adapter.Speed) % 100) : 0;
                 if (double.IsNaN(utilization) || double.IsInfinity(utilization))
                     utilization = 0;
@@ -3130,6 +3144,8 @@ public sealed record NetworkDashboardView(
     StackPanel HistoryPanel,
     StackPanel AdapterPanel,
     StackPanel RadarPanel);
+
+public sealed record NetworkCounterSample(DateTime TimestampUtc, long BytesSent, long BytesReceived);
 
 public sealed record AnalysisFinding(string Title, string Detail, string Value, int Severity);
 

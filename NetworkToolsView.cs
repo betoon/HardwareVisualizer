@@ -10,6 +10,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
+using Microsoft.Win32;
 using PacketDotNet;
 using SharpPcap;
 using SharpPcap.LibPcap;
@@ -30,6 +31,8 @@ internal sealed class NetworkToolsView : IDisposable
     private readonly ObservableCollection<PacketRow> packets = [];
     private readonly ObservableCollection<ProtocolRow> protocols = [];
     private readonly ConcurrentDictionary<string, (long Packets, long Bytes)> protocolCounts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<RawCapture> capturedPackets = [];
+    private readonly object captureSync = new();
     private readonly ComboBox captureAdapter = InputCombo();
     private readonly TextBox captureFilter = Input("ip or arp");
     private readonly TextBlock captureStatus = Status();
@@ -101,6 +104,7 @@ internal sealed class NetworkToolsView : IDisposable
         AddColumn(grid, "IP address", "Address", 140);
         AddColumn(grid, "Hostname", "Hostname", 220);
         AddColumn(grid, "MAC address", "Mac", 160);
+        AddColumn(grid, "Likely device", "DeviceType", 150);
         AddColumn(grid, "Latency", "Latency", 90);
         AddColumn(grid, "Services", "Services", 260);
         var start = Action("Discover Devices", async () => await Discover(subnet.Text, status));
@@ -127,7 +131,15 @@ internal sealed class NetworkToolsView : IDisposable
         var refresh = Action("Refresh Adapters", LoadCaptureAdapters);
         var start = Action("Start Capture", StartCapture);
         var stop = Action("Stop", StopCapture);
-        var clear = Action("Clear", () => { packets.Clear(); protocols.Clear(); protocolCounts.Clear(); packetSequence = 0; });
+        var save = Action("Save PCAP", SaveCapture);
+        var clear = Action("Clear", () =>
+        {
+            packets.Clear();
+            protocols.Clear();
+            protocolCounts.Clear();
+            lock (captureSync) capturedPackets.Clear();
+            packetSequence = 0;
+        });
         LoadCaptureAdapters();
         var split = new Grid();
         split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -136,7 +148,7 @@ internal sealed class NetworkToolsView : IDisposable
         Grid.SetColumn(protocolGrid, 1);
         split.Children.Add(packetGrid);
         split.Children.Add(protocolGrid);
-        return Page("Packet Capture and Protocol Inspection", "Optional Npcap/SharpPcap capture. Only packet headers and protocol metadata are displayed; payload contents are not shown.", Row(Labeled("Adapter", captureAdapter), Labeled("Capture filter", captureFilter), refresh, start, stop, clear), captureStatus, split);
+        return Page("Packet Capture and Protocol Inspection", "Optional Npcap/SharpPcap capture. Only packet headers and protocol metadata are displayed; payload contents are not shown. Saving creates a standard PCAP file containing captured packets.", Row(Labeled("Adapter", captureAdapter), Labeled("Capture filter", captureFilter), refresh, start, stop, save, clear), captureStatus, split);
     }
 
     private async Task RunPing(string target, TextBox output)
@@ -255,10 +267,10 @@ internal sealed class NetworkToolsView : IDisposable
                 token.ThrowIfCancellationRequested();
                 string hostname = "";
                 try { hostname = (await Dns.GetHostEntryAsync(item.Address)).HostName; } catch { }
-                int[] common = [22, 53, 80, 139, 443, 445, 3389, 8080];
+                int[] common = [22, 53, 80, 139, 443, 445, 554, 631, 3389, 5900, 8080, 9100];
                 PortRow[] checks = await Task.WhenAll(common.Select(port => CheckPort(item.Address, port, token, 220)));
                 string services = string.Join(", ", checks.Where(row => row.Status == "Open").Select(row => row.Service));
-                devices.Add(new(item.Address.ToString(), hostname, arp.GetValueOrDefault(item.Address.ToString(), ""), item.Latency + " ms", services));
+                devices.Add(new(item.Address.ToString(), hostname, arp.GetValueOrDefault(item.Address.ToString(), ""), InferDeviceType(item.Address, hostname, checks), item.Latency + " ms", services));
                 status.Text = $"Found {devices.Count} responding device(s)...";
             }
             status.Text = $"Discovery complete: {devices.Count} responding device(s).";
@@ -323,6 +335,12 @@ internal sealed class NetworkToolsView : IDisposable
     private void PacketArrived(object sender, PacketCapture capture)
     {
         RawCapture raw = capture.GetPacket();
+        lock (captureSync)
+        {
+            capturedPackets.Add(raw);
+            if (capturedPackets.Count > 10000)
+                capturedPackets.RemoveAt(0);
+        }
         Packet packet;
         try { packet = Packet.ParsePacket(raw.LinkLayerType, raw.Data); }
         catch { return; }
@@ -362,6 +380,41 @@ internal sealed class NetworkToolsView : IDisposable
                 protocols.Add(new(item.Key, item.Value.Packets, item.Value.Bytes));
             captureStatus.Text = $"Capturing: {packetSequence} packet(s), {protocolCounts.Values.Sum(item => item.Bytes):N0} bytes.";
         });
+    }
+
+    private void SaveCapture()
+    {
+        RawCapture[] snapshot;
+        lock (captureSync) snapshot = capturedPackets.ToArray();
+        if (snapshot.Length == 0)
+        {
+            captureStatus.Text = "There are no captured packets to save.";
+            return;
+        }
+
+        var dialog = new SaveFileDialog
+        {
+            Title = "Save packet capture",
+            Filter = "Packet capture (*.pcap)|*.pcap",
+            DefaultExt = ".pcap",
+            AddExtension = true,
+            FileName = $"HardwareVisualizer-{DateTime.Now:yyyyMMdd-HHmmss}.pcap"
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+
+        try
+        {
+            using var writer = new CaptureFileWriterDevice(dialog.FileName);
+            writer.Open(new DeviceConfiguration());
+            foreach (RawCapture packet in snapshot)
+                writer.Write(packet);
+            captureStatus.Text = $"Saved {snapshot.Length} packet(s) to {dialog.FileName}.";
+        }
+        catch (Exception exception)
+        {
+            captureStatus.Text = $"Could not save capture: {exception.Message}";
+        }
     }
 
     private static async Task<IPAddress> ResolvePrivateTarget(string text)
@@ -421,8 +474,22 @@ internal sealed class NetworkToolsView : IDisposable
     {
         20 or 21 => "FTP", 22 => "SSH", 23 => "Telnet", 25 => "SMTP", 53 => "DNS", 67 or 68 => "DHCP",
         80 => "HTTP", 110 => "POP3", 123 => "NTP", 139 => "NetBIOS", 143 => "IMAP", 443 => "HTTPS",
-        445 => "SMB", 554 => "RTSP", 631 => "IPP", 3389 => "RDP", 5900 => "VNC", 8080 => "HTTP-Alt", _ => port.ToString()
+        445 => "SMB", 554 => "RTSP", 631 => "IPP", 3389 => "RDP", 5900 => "VNC", 8080 => "HTTP-Alt", 9100 => "Printer", _ => port.ToString()
     };
+
+    private static string InferDeviceType(IPAddress address, string hostname, IEnumerable<PortRow> checks)
+    {
+        var open = checks.Where(row => row.Status == "Open").Select(row => row.Port).ToHashSet();
+        string name = hostname.ToLowerInvariant();
+        if (open.Contains(631) || open.Contains(9100) || name.Contains("printer")) return "Printer";
+        if (open.Contains(554) || name.Contains("camera") || name.Contains("cam")) return "Camera / media";
+        if (open.Contains(445) || open.Contains(3389)) return "Windows computer";
+        if (open.Contains(22) && (open.Contains(80) || open.Contains(443))) return "Server / appliance";
+        if (open.Contains(53) || address.GetAddressBytes()[3] == 1) return "Router / DNS";
+        if (open.Contains(5900)) return "Remote computer";
+        if (open.Contains(80) || open.Contains(443) || open.Contains(8080)) return "Web appliance";
+        return "Network device";
+    }
 
     private static Dictionary<string, string> ReadArpTable()
     {
@@ -503,7 +570,7 @@ internal sealed class NetworkToolsView : IDisposable
 
     private sealed record ConnectionRow(string Protocol, string Local, string Remote, string State);
     private sealed record PortRow(int Port, string Service, string Status, string Latency);
-    private sealed record DeviceRow(string Address, string Hostname, string Mac, string Latency, string Services);
+    private sealed record DeviceRow(string Address, string Hostname, string Mac, string DeviceType, string Latency, string Services);
     private sealed record PacketRow(long Number, string Time, string Protocol, string Source, string Destination, int Length, string Details);
     private sealed record ProtocolRow(string Protocol, long Packets, long Bytes);
 }
