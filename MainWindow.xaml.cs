@@ -1051,7 +1051,7 @@ public partial class MainWindow : Window
         SetSummary("GPU Temp", Hottest(readings, "Temperature", "gpu"));
         SetSummary("CPU Load", Highest(readings, "Load", "cpu"));
         SetSummary("Memory", Highest(readings, "Load", "memory"));
-        SetSummary("Drive", Highest(readings.Where(IsDriveSensor).ToList(), ""));
+        SetSummary("Drive", Hottest(readings.Where(IsDriveSensor).ToList(), "Temperature"));
         SetSummary("Fan", Highest(readings, "Fan"));
         SetSummary("Clock", Highest(readings.Where(IsClockSensor).ToList(), ""));
         SetSummary("Voltage", Highest(readings, "Voltage"));
@@ -2819,11 +2819,13 @@ public partial class MainWindow : Window
 
     private static bool IsTemperatureThreshold(SensorReading reading)
     {
-        if (reading.Type != "Temperature" || !IsDriveSensor(reading))
+        if (reading.Type != "Temperature")
             return false;
 
-        return reading.Name.Equals("Warning Temperature", StringComparison.OrdinalIgnoreCase)
-               || reading.Name.Equals("Critical Temperature", StringComparison.OrdinalIgnoreCase);
+        string name = reading.Name.ToLowerInvariant();
+        return name.Contains("limit", StringComparison.Ordinal)
+               || name.Contains("warning temperature", StringComparison.Ordinal)
+               || name.Contains("critical temperature", StringComparison.Ordinal);
     }
 
     private static SensorReading? Highest(List<SensorReading> readings, string type, params string[] terms)
