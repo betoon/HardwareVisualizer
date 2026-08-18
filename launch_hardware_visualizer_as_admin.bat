@@ -1,8 +1,22 @@
 @echo off
+setlocal
 set "APP_DIR=%~dp0"
 set "APP_EXE=%APP_DIR%bin\x64\Release\net10.0-windows\HardwareVisualizer.exe"
-if exist "%APP_EXE%" (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%APP_EXE%' -Verb RunAs"
-    exit /b
-)
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c cd /d ""%APP_DIR%"" && dotnet run --project HardwareVisualizer.csproj -c Release -p:Platform=x64' -Verb RunAs"
+cd /d "%APP_DIR%"
+dotnet build HardwareVisualizer.csproj -c Release -p:Platform=x64
+if errorlevel 1 goto failed
+if not exist "%APP_EXE%" goto missing
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%APP_EXE%' -WorkingDirectory '%APP_DIR%' -Verb RunAs"
+exit /b %errorlevel%
+
+:missing
+echo Built app was not found at:
+echo %APP_EXE%
+pause
+exit /b 1
+
+:failed
+echo.
+echo Build failed. The app was not launched.
+pause
+exit /b 1
