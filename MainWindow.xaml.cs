@@ -1713,7 +1713,7 @@ public partial class MainWindow : Window
     private List<AnalysisFinding> BuildProblemFindings(List<SensorReading> readings)
     {
         var findings = new List<AnalysisFinding>();
-        foreach (SensorReading temp in readings.Where(reading => reading.Type == "Temperature"))
+        foreach (SensorReading temp in readings.Where(reading => reading.Type == "Temperature" && !IsTemperatureThreshold(reading)))
         {
             double watch = ContainsAny(temp, "gpu") ? gpuWatchThreshold : cpuWatchThreshold;
             double hot = ContainsAny(temp, "gpu") ? gpuHotThreshold : cpuHotThreshold;
@@ -2811,9 +2811,19 @@ public partial class MainWindow : Window
     {
         return readings
             .Where(reading => reading.Type == type)
+            .Where(reading => !IsTemperatureThreshold(reading))
             .Where(reading => terms.Length == 0 || ContainsAny(reading, terms))
             .OrderByDescending(reading => reading.Value)
             .FirstOrDefault();
+    }
+
+    private static bool IsTemperatureThreshold(SensorReading reading)
+    {
+        if (reading.Type != "Temperature" || !IsDriveSensor(reading))
+            return false;
+
+        return reading.Name.Equals("Warning Temperature", StringComparison.OrdinalIgnoreCase)
+               || reading.Name.Equals("Critical Temperature", StringComparison.OrdinalIgnoreCase);
     }
 
     private static SensorReading? Highest(List<SensorReading> readings, string type, params string[] terms)
@@ -2841,6 +2851,9 @@ public partial class MainWindow : Window
     private int SeverityFor(SensorReading reading)
     {
         double value = GraphValue(reading);
+        if (IsTemperatureThreshold(reading))
+            return 0;
+
         if (reading.Type == "Temperature")
         {
             double watch = ContainsAny(reading, "gpu") ? gpuWatchThreshold : cpuWatchThreshold;
@@ -2865,6 +2878,8 @@ public partial class MainWindow : Window
 
     private string InterpretationLabel(SensorReading reading)
     {
+        if (IsTemperatureThreshold(reading)) return "Limit";
+
         int severity = SeverityFor(reading);
         if (severity >= 2) return "High";
         if (severity == 1) return "Watch";
@@ -2874,6 +2889,9 @@ public partial class MainWindow : Window
     private string InterpretationDetail(SensorReading reading)
     {
         double value = GraphValue(reading);
+        if (IsTemperatureThreshold(reading))
+            return "Configured drive temperature limit reported by SMART; this is not a live temperature reading.";
+
         if (reading.Type == "Temperature")
         {
             double watch = ContainsAny(reading, "gpu") ? gpuWatchThreshold : cpuWatchThreshold;
