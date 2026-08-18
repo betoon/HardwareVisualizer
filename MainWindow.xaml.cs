@@ -38,6 +38,7 @@ public partial class MainWindow : Window
     private DateTime lastHistoryPrune = DateTime.MinValue;
     private AnalysisView? analysisView;
     private NetworkDashboardView? networkView;
+    private NetworkToolsView? networkToolsView;
     private MiniMonitorWindow? miniMonitor;
     private List<SensorReading>? baselineReadings;
     private DateTime? baselineTime;
@@ -105,6 +106,7 @@ public partial class MainWindow : Window
         Closed += (_, _) =>
         {
             SaveSettings();
+            networkToolsView?.Dispose();
             computer.Close();
         };
 
@@ -121,6 +123,8 @@ public partial class MainWindow : Window
         SensorTabs.Items.Add(new TabItem { Header = "Analysis", Content = Scroll(analysisView.Root) });
         networkView = CreateNetworkDashboardView();
         SensorTabs.Items.Add(new TabItem { Header = "Network Dashboard", Content = Scroll(networkView.Root) });
+        networkToolsView = new NetworkToolsView();
+        SensorTabs.Items.Add(new TabItem { Header = "Network Tools", Content = networkToolsView.Root });
         SensorTabs.Items.Add(new TabItem { Header = "Historical Log", Content = CreateHistoricalLogView() });
 
         foreach (string category in CategoryOrder)

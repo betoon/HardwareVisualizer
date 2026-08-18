@@ -6,3 +6,15 @@ Project source and license notices are kept in:
 
 When redistributing HardwareVisualizer, keep the LibreHardwareMonitor license
 and third-party notices with the installed application files.
+
+HardwareVisualizer references SharpPcap for optional packet capture.
+SharpPcap is licensed under the MIT License:
+https://github.com/dotpcap/sharppcap
+
+HardwareVisualizer references PacketDotNet for packet header parsing.
+PacketDotNet is licensed under the Mozilla Public License 2.0:
+https://github.com/dotpcap/packetnet
+
+Npcap is not bundled with HardwareVisualizer. Packet capture requires a
+separately installed Npcap driver and is subject to the Npcap license:
+https://npcap.com/
