@@ -73,6 +73,8 @@ public partial class MainWindow : Window
         "Power",
         "Fans",
         "Memory/Data",
+        "CPU",
+        "GPU",
         "Drives",
         "Network",
         "Sensor Types",
@@ -2708,6 +2710,8 @@ public partial class MainWindow : Window
             "Power" => reading.Type is "Power" or "Current" or "Energy",
             "Fans" => IsFanSensor(reading),
             "Memory/Data" => IsMemorySensor(reading),
+            "CPU" => IsCpuSensor(reading),
+            "GPU" => IsGpuSensor(reading),
             "Drives" => IsDriveSensor(reading),
             "Network" => IsNetworkSensor(reading),
             "Sensor Types" => true,
@@ -2737,6 +2741,21 @@ public partial class MainWindow : Window
                || reading.Type.Contains("Level", StringComparison.OrdinalIgnoreCase)
                || reading.HardwareType.Contains("Memory", StringComparison.OrdinalIgnoreCase)
                || ContainsAny(reading, "memory", "ram", "vram", "virtual", "d3d shared", "dedicated", "used", "free", "total", "/data/", "/smalldata/", "/level/");
+    }
+
+    private static bool IsCpuSensor(SensorReading reading)
+    {
+        return reading.HardwareType.Contains("Cpu", StringComparison.OrdinalIgnoreCase)
+               || reading.Identifier.StartsWith("/intelcpu/", StringComparison.OrdinalIgnoreCase)
+               || reading.Identifier.StartsWith("/amdcpu/", StringComparison.OrdinalIgnoreCase)
+               || ContainsAny(reading, "cpu package", "cpu total", "cpu cores", "processor");
+    }
+
+    private static bool IsGpuSensor(SensorReading reading)
+    {
+        return reading.HardwareType.Contains("Gpu", StringComparison.OrdinalIgnoreCase)
+               || reading.Identifier.StartsWith("/gpu-", StringComparison.OrdinalIgnoreCase)
+               || ContainsAny(reading, "gpu core", "gpu memory", "gpu hot spot", "graphics processor");
     }
 
     private static bool IsDriveSensor(SensorReading reading)
