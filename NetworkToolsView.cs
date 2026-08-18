@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
@@ -10,6 +11,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using PacketDotNet;
 using SharpPcap;
@@ -30,15 +32,28 @@ internal sealed class NetworkToolsView : IDisposable
     private readonly ObservableCollection<DeviceRow> devices = [];
     private readonly ObservableCollection<PacketRow> packets = [];
     private readonly ObservableCollection<ProtocolRow> protocols = [];
+    private readonly ObservableCollection<DeviceBandwidthRow> deviceBandwidth = [];
     private readonly ConcurrentDictionary<string, (long Packets, long Bytes)> protocolCounts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, (long Download, long Upload)> deviceTraffic = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (long Download, long Upload)> previousDeviceTraffic = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<RawCapture> capturedPackets = [];
     private readonly object captureSync = new();
+    private readonly DispatcherTimer bandwidthTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly DispatcherTimer routerTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly HttpClient routerClient = new() { Timeout = TimeSpan.FromSeconds(2) };
+    private readonly HashSet<string> localAddresses = GetLocalAddresses();
     private readonly ComboBox captureAdapter = InputCombo();
     private readonly TextBox captureFilter = Input("ip or arp");
     private readonly TextBlock captureStatus = Status();
     private CancellationTokenSource? scanCancellation;
     private ICaptureDevice? activeCapture;
     private long packetSequence;
+    private TextBlock? routerBandwidthStatus;
+    private TextBlock? routerDownload;
+    private TextBlock? routerUpload;
+    private ulong? previousRouterReceived;
+    private ulong? previousRouterSent;
+    private DateTime previousRouterSample;
 
     public NetworkToolsView()
     {
@@ -47,7 +62,11 @@ internal sealed class NetworkToolsView : IDisposable
         Root.Items.Add(Tab("Connections", CreateConnections()));
         Root.Items.Add(Tab("Port Scanner", CreatePortScanner()));
         Root.Items.Add(Tab("Device Discovery", CreateDiscovery()));
+        Root.Items.Add(Tab("Bandwidth by Device", CreateBandwidth()));
         Root.Items.Add(Tab("Packet Capture", CreateCapture()));
+        bandwidthTimer.Tick += (_, _) => RefreshObservedBandwidth();
+        routerTimer.Tick += async (_, _) => await RefreshRouterBandwidth();
+        bandwidthTimer.Start();
     }
 
     public TabControl Root { get; }
@@ -55,6 +74,9 @@ internal sealed class NetworkToolsView : IDisposable
     public void Dispose()
     {
         scanCancellation?.Cancel();
+        bandwidthTimer.Stop();
+        routerTimer.Stop();
+        routerClient.Dispose();
         StopCapture();
     }
 
@@ -149,6 +171,40 @@ internal sealed class NetworkToolsView : IDisposable
         split.Children.Add(packetGrid);
         split.Children.Add(protocolGrid);
         return Page("Packet Capture and Protocol Inspection", "Optional Npcap/SharpPcap capture. Only packet headers and protocol metadata are displayed; payload contents are not shown. Saving creates a standard PCAP file containing captured packets.", Row(Labeled("Adapter", captureAdapter), Labeled("Capture filter", captureFilter), refresh, start, stop, save, clear), captureStatus, split);
+    }
+
+    private UIElement CreateBandwidth()
+    {
+        routerBandwidthStatus = Status();
+        routerDownload = new TextBlock { Text = "--", Foreground = Accent, FontSize = 24, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 2, 30, 2) };
+        routerUpload = new TextBlock { Text = "--", Foreground = Accent, FontSize = 24, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 2, 30, 2) };
+        var totals = new WrapPanel();
+        totals.Children.Add(Labeled("Router WAN download", routerDownload));
+        totals.Children.Add(Labeled("Router WAN upload", routerUpload));
+
+        var startRouter = Action("Start Router Monitor", () =>
+        {
+            previousRouterReceived = null;
+            previousRouterSent = null;
+            routerTimer.Start();
+            _ = RefreshRouterBandwidth();
+        });
+        var stopRouter = Action("Stop Router Monitor", () =>
+        {
+            routerTimer.Stop();
+            if (routerBandwidthStatus is not null) routerBandwidthStatus.Text = "Router monitoring stopped.";
+        });
+
+        var grid = GridFor(deviceBandwidth);
+        AddColumn(grid, "Observed device", "Address", 180);
+        AddColumn(grid, "Download", "DownloadRate", 130);
+        AddColumn(grid, "Upload", "UploadRate", 130);
+        AddColumn(grid, "Observed total", "Total", 140);
+        AddColumn(grid, "Coverage", "Coverage", 340);
+
+        return Page("Bandwidth by Device",
+            "NETGEAR R7000 UPnP provides authoritative whole-Internet totals. Per-device rows contain only traffic visible to this computer's selected capture adapter; switched wired and encrypted wireless traffic between other clients and the router is normally not visible.",
+            Row(startRouter, stopRouter), totals, routerBandwidthStatus, grid);
     }
 
     private async Task RunPing(string target, TextBox output)
@@ -361,6 +417,8 @@ internal sealed class NetworkToolsView : IDisposable
                 protocol = udp.DestinationPort == 53 || udp.SourcePort == 53 ? "DNS" : udp.DestinationPort is 67 or 68 || udp.SourcePort is 67 or 68 ? "DHCP" : "UDP";
                 details = $"{udp.SourcePort} → {udp.DestinationPort}";
             }
+
+            TrackDeviceTraffic(source, destination, raw.Data.Length);
         }
         else if (packet.Extract<ArpPacket>() is { } arp)
         {
@@ -380,6 +438,89 @@ internal sealed class NetworkToolsView : IDisposable
                 protocols.Add(new(item.Key, item.Value.Packets, item.Value.Bytes));
             captureStatus.Text = $"Capturing: {packetSequence} packet(s), {protocolCounts.Values.Sum(item => item.Bytes):N0} bytes.";
         });
+    }
+
+    private void TrackDeviceTraffic(string source, string destination, int bytes)
+    {
+        if (localAddresses.Contains(source) && !localAddresses.Contains(destination))
+            deviceTraffic.AddOrUpdate(destination, (0, bytes), (_, old) => (old.Download, old.Upload + bytes));
+        else if (localAddresses.Contains(destination) && !localAddresses.Contains(source))
+            deviceTraffic.AddOrUpdate(source, (bytes, 0), (_, old) => (old.Download + bytes, old.Upload));
+    }
+
+    private void RefreshObservedBandwidth()
+    {
+        foreach (var item in deviceTraffic.OrderByDescending(item => item.Value.Download + item.Value.Upload))
+        {
+            previousDeviceTraffic.TryGetValue(item.Key, out var previous);
+            long downloadRate = Math.Max(0, item.Value.Download - previous.Download) / 2;
+            long uploadRate = Math.Max(0, item.Value.Upload - previous.Upload) / 2;
+            previousDeviceTraffic[item.Key] = item.Value;
+            DeviceBandwidthRow? existing = deviceBandwidth.FirstOrDefault(row => row.Address == item.Key);
+            var updated = new DeviceBandwidthRow(item.Key, FormatRate(downloadRate), FormatRate(uploadRate), FormatBytes(item.Value.Download + item.Value.Upload), "Observed by this computer; not authoritative for the whole LAN");
+            if (existing is null) deviceBandwidth.Add(updated);
+            else deviceBandwidth[deviceBandwidth.IndexOf(existing)] = updated;
+        }
+    }
+
+    private async Task RefreshRouterBandwidth()
+    {
+        if (routerBandwidthStatus is null || routerDownload is null || routerUpload is null) return;
+        try
+        {
+            ulong received = await ReadUpnpCounter("GetTotalBytesReceived", "NewTotalBytesReceived");
+            ulong sent = await ReadUpnpCounter("GetTotalBytesSent", "NewTotalBytesSent");
+            DateTime now = DateTime.UtcNow;
+            if (previousRouterReceived.HasValue && previousRouterSent.HasValue)
+            {
+                double elapsed = Math.Max(0.1, (now - previousRouterSample).TotalSeconds);
+                routerDownload.Text = FormatRate(CounterDelta(received, previousRouterReceived.Value) / elapsed);
+                routerUpload.Text = FormatRate(CounterDelta(sent, previousRouterSent.Value) / elapsed);
+            }
+            previousRouterReceived = received;
+            previousRouterSent = sent;
+            previousRouterSample = now;
+            routerBandwidthStatus.Text = $"NETGEAR R7000 WAN totals: {FormatBytes((long)received)} received, {FormatBytes((long)sent)} sent. Updated {DateTime.Now:T}.";
+        }
+        catch (Exception exception)
+        {
+            routerBandwidthStatus.Text = $"Could not read NETGEAR R7000 UPnP counters: {exception.Message}";
+            routerTimer.Stop();
+        }
+    }
+
+    private async Task<ulong> ReadUpnpCounter(string action, string responseElement)
+    {
+        const string service = "urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1";
+        using var request = new HttpRequestMessage(HttpMethod.Post, "http://10.0.0.1:5000/Public_UPNP_C2");
+        request.Headers.TryAddWithoutValidation("SOAPACTION", $"\"{service}#{action}\"");
+        request.Content = new StringContent($"<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body><u:{action} xmlns:u=\"{service}\"></u:{action}></s:Body></s:Envelope>", Encoding.UTF8, "text/xml");
+        using HttpResponseMessage response = await routerClient.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        string xml = await response.Content.ReadAsStringAsync();
+        Match match = Regex.Match(xml, $"<{responseElement}>(\\d+)</{responseElement}>", RegexOptions.IgnoreCase);
+        return match.Success && ulong.TryParse(match.Groups[1].Value, out ulong value) ? value : throw new InvalidOperationException($"The router did not return {responseElement}.");
+    }
+
+    private static double CounterDelta(ulong current, ulong previous) => current >= previous ? current - previous : uint.MaxValue - previous + current + 1d;
+
+    private static HashSet<string> GetLocalAddresses()
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { IPAddress.Loopback.ToString(), IPAddress.IPv6Loopback.ToString() };
+        foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
+            foreach (UnicastIPAddressInformation address in nic.GetIPProperties().UnicastAddresses)
+                result.Add(address.Address.ToString());
+        return result;
+    }
+
+    private static string FormatRate(double bytesPerSecond) => FormatBytes(bytesPerSecond) + "/s";
+
+    private static string FormatBytes(double bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        int unit = 0;
+        while (bytes >= 1024 && unit < units.Length - 1) { bytes /= 1024; unit++; }
+        return $"{bytes:0.##} {units[unit]}";
     }
 
     private void SaveCapture()
@@ -530,7 +671,7 @@ internal sealed class NetworkToolsView : IDisposable
         return row;
     }
 
-    private static FrameworkElement Labeled(string label, Control control)
+    private static FrameworkElement Labeled(string label, FrameworkElement control)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 0, 8, 4) };
         panel.Children.Add(new TextBlock { Text = label, Foreground = Muted, Margin = new Thickness(0, 0, 0, 3) });
@@ -573,4 +714,5 @@ internal sealed class NetworkToolsView : IDisposable
     private sealed record DeviceRow(string Address, string Hostname, string Mac, string DeviceType, string Latency, string Services);
     private sealed record PacketRow(long Number, string Time, string Protocol, string Source, string Destination, int Length, string Details);
     private sealed record ProtocolRow(string Protocol, long Packets, long Bytes);
+    private sealed record DeviceBandwidthRow(string Address, string DownloadRate, string UploadRate, string Total, string Coverage);
 }
