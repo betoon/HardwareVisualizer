@@ -40,4 +40,9 @@
                       SetTargetFramework="TargetFramework=net10.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Remove="Assets\splash.png" />
+    <Resource Include="Assets\splash.png" />
+  </ItemGroup>
+
 </Project>
