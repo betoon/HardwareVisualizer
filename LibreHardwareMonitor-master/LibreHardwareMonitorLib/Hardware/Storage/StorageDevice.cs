@@ -33,8 +33,12 @@ public sealed class StorageDevice : Hardware, ISmart
     private bool _initialized;
 
     private long _lastReadCount;
+    private long _lastReadOperationCount;
+    private long _lastReadTime;
     private long _lastTime;
     private long _lastWriteCount;
+    private long _lastWriteOperationCount;
+    private long _lastWriteTime;
 
     private DateTime _lastUpdate = DateTime.MinValue;
 
@@ -43,9 +47,12 @@ public sealed class StorageDevice : Hardware, ISmart
 
     private Sensor _sensorDiskReadActivity;
     private Sensor _sensorDiskReadRate;
+    private Sensor _sensorDiskReadLatency;
     private Sensor _sensorDiskTotalActivity;
     private Sensor _sensorDiskWriteActivity;
     private Sensor _sensorDiskWriteRate;
+    private Sensor _sensorDiskWriteLatency;
+    private Sensor _sensorDiskQueueDepth;
     private Sensor _usageSensor;
     private Sensor _freeSpaceSensor;
 
@@ -349,6 +356,15 @@ public sealed class StorageDevice : Hardware, ISmart
         _sensorDiskWriteRate = new Sensor("Write Rate", 55, SensorType.Throughput, this, _settings);
         ActivateSensor(_sensorDiskWriteRate);
 
+        _sensorDiskReadLatency = new Sensor("Average Read Latency", 56, SensorType.Factor, this, _settings);
+        ActivateSensor(_sensorDiskReadLatency);
+
+        _sensorDiskWriteLatency = new Sensor("Average Write Latency", 57, SensorType.Factor, this, _settings);
+        ActivateSensor(_sensorDiskWriteLatency);
+
+        _sensorDiskQueueDepth = new Sensor("Queue Depth", 58, SensorType.Factor, this, _settings);
+        ActivateSensor(_sensorDiskQueueDepth);
+
         AddSmartAttributeSensors();
     }
 
@@ -408,6 +424,26 @@ public sealed class StorageDevice : Hardware, ISmart
 
         _perfTotal.Update(diskPerformance.IdleTime, diskPerformance.QueryTime);
         _sensorDiskTotalActivity.Value = (float)(100 - _perfTotal.Result);
+
+        long readOperations = diskPerformance.ReadCount;
+        long readOperationDiff = readOperations - _lastReadOperationCount;
+        long readTimeDiff = diskPerformance.ReadTime - _lastReadTime;
+        _sensorDiskReadLatency.Value = _lastReadOperationCount != 0 && readOperationDiff > 0 && readTimeDiff >= 0
+            ? (float)(readTimeDiff / 10000.0 / readOperationDiff)
+            : 0;
+        _lastReadOperationCount = readOperations;
+        _lastReadTime = diskPerformance.ReadTime;
+
+        long writeOperations = diskPerformance.WriteCount;
+        long writeOperationDiff = writeOperations - _lastWriteOperationCount;
+        long writeTimeDiff = diskPerformance.WriteTime - _lastWriteTime;
+        _sensorDiskWriteLatency.Value = _lastWriteOperationCount != 0 && writeOperationDiff > 0 && writeTimeDiff >= 0
+            ? (float)(writeTimeDiff / 10000.0 / writeOperationDiff)
+            : 0;
+        _lastWriteOperationCount = writeOperations;
+        _lastWriteTime = diskPerformance.WriteTime;
+
+        _sensorDiskQueueDepth.Value = diskPerformance.QueueDepth;
 
         long readCount = diskPerformance.BytesRead;
         long readDiff = readCount - _lastReadCount;

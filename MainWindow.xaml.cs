@@ -12,6 +12,7 @@ using System.Diagnostics;
 using Microsoft.Win32;
 using System.Media;
 using LibreHardwareMonitor.Hardware;
+using LibreHardwareMonitor.Hardware.Storage;
 
 namespace HardwareVisualizer;
 
@@ -849,11 +850,13 @@ public partial class MainWindow : Window
                     sensor.Name,
                     sensor.SensorType.ToString(),
                     sensor.Value.Value,
-                    UnitFor(sensor.SensorType),
+                    UnitFor(sensor),
                     sensor.Identifier.ToString(),
                     hardware.HardwareType.ToString()
                 ));
             }));
+
+            AddStorageHealthReadings(readings);
         }
         catch
         {
@@ -866,6 +869,50 @@ public partial class MainWindow : Window
             .GroupBy(reading => reading.Identifier)
             .Select(group => group.First())
             .ToList();
+    }
+
+    private void AddStorageHealthReadings(List<SensorReading> readings)
+    {
+        foreach (StorageDevice drive in computer.Hardware.OfType<StorageDevice>())
+        {
+            string hardware = HardwarePath(drive);
+            string identifier = drive.Identifier.ToString();
+            object? statusValue = drive.Storage.HealthStatus;
+            string status = statusValue?.ToString() ?? "Unavailable";
+            string reason = drive.Storage.HealthStatusReason ?? "";
+            bool healthy = status.Equals("Healthy", StringComparison.OrdinalIgnoreCase)
+                           || status.Equals("Good", StringComparison.OrdinalIgnoreCase)
+                           || status.Equals("OK", StringComparison.OrdinalIgnoreCase);
+            string display = statusValue is null ? "Unavailable" : healthy ? "Healthy" : status;
+            if (!string.IsNullOrWhiteSpace(reason))
+                display += $" — {reason}";
+
+            readings.Add(new SensorReading(hardware, "SMART Health Status", "Health", statusValue is null ? -1 : healthy ? 1 : 0, "", $"{identifier}/health/status", "Storage", display));
+
+            foreach (SmartAttribute attribute in drive.Attributes.Where(IsSmartErrorAttribute))
+            {
+                readings.Add(new SensorReading(
+                    hardware,
+                    $"SMART {attribute.Name}",
+                    "SMART",
+                    attribute.Value,
+                    "raw",
+                    $"{identifier}/smart/{attribute.Id:x2}",
+                    "Storage"));
+            }
+        }
+    }
+
+    private static bool IsSmartErrorAttribute(SmartAttribute attribute)
+    {
+        string name = attribute.Name.ToLowerInvariant();
+        return name.Contains("error")
+               || name.Contains("uncorrect")
+               || name.Contains("reallocated")
+               || name.Contains("pending sector")
+               || name.Contains("crc")
+               || name.Contains("media and data integrity")
+               || name.Contains("critical warning");
     }
 
     private List<SensorReading> ReadWindowsNetworkSensors()
@@ -1743,7 +1790,7 @@ public partial class MainWindow : Window
                 findings.Add(new AnalysisFinding("Temperature warm", $"{temp.Hardware} / {temp.Name}", temp.DisplayValue, 1));
         }
 
-        foreach (SensorReading load in readings.Where(reading => reading.Type is "Load" or "Level"))
+        foreach (SensorReading load in readings.Where(reading => reading.Type is "Load" or "Level").Where(reading => !IsDriveCapacityReading(reading)))
         {
             if (load.Value >= 95)
                 findings.Add(new AnalysisFinding("Load nearly maxed", $"{load.Hardware} / {load.Name}", load.DisplayValue, 2));
@@ -2865,6 +2912,14 @@ public partial class MainWindow : Window
                || name.Contains("critical temperature", StringComparison.Ordinal);
     }
 
+    private static bool IsDriveCapacityReading(SensorReading reading)
+    {
+        return IsDriveSensor(reading)
+               && (reading.Name.Contains("Used Space", StringComparison.OrdinalIgnoreCase)
+                   || reading.Name.Contains("Free Space", StringComparison.OrdinalIgnoreCase)
+                   || reading.Name.Contains("Total Space", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static SensorReading? Highest(List<SensorReading> readings, string type, params string[] terms)
     {
         return readings
@@ -2893,6 +2948,15 @@ public partial class MainWindow : Window
         if (IsTemperatureThreshold(reading))
             return 0;
 
+        if (reading.Type == "Health")
+            return reading.Value < 0 ? 0 : reading.Value < 1 ? 2 : 0;
+
+        if (reading.Type == "SMART")
+            return reading.Value > 0 ? 1 : 0;
+
+        if (IsDriveCapacityReading(reading))
+            return reading.Name.Contains("Used Space", StringComparison.OrdinalIgnoreCase) && value >= 95 ? 1 : 0;
+
         if (reading.Type == "Temperature")
         {
             double watch = ContainsAny(reading, "gpu") ? gpuWatchThreshold : cpuWatchThreshold;
@@ -2918,6 +2982,8 @@ public partial class MainWindow : Window
     private string InterpretationLabel(SensorReading reading)
     {
         if (IsTemperatureThreshold(reading)) return "Limit";
+        if (reading.Type == "Health") return reading.Value < 0 ? "Unavailable" : reading.Value >= 1 ? "Healthy" : "Warning";
+        if (reading.Type == "SMART") return reading.Value > 0 ? "Recorded" : "Clear";
 
         int severity = SeverityFor(reading);
         if (severity >= 2) return "High";
@@ -2930,6 +2996,23 @@ public partial class MainWindow : Window
         double value = GraphValue(reading);
         if (IsTemperatureThreshold(reading))
             return "Configured drive temperature limit reported by SMART; this is not a live temperature reading.";
+
+        if (reading.Type == "Health")
+            return reading.Value < 0
+                ? "The drive did not expose an overall SMART health status. This does not by itself indicate failure."
+                : reading.Value >= 1
+                    ? "The drive currently reports a healthy overall SMART status."
+                    : $"The drive reports a SMART health warning: {reading.DisplayValue}. Back up important data and inspect the drive's SMART details.";
+
+        if (reading.Type == "SMART")
+            return reading.Value > 0
+                ? "The drive reports a non-zero raw SMART error-related counter. Some counters are lifetime totals and do not necessarily mean the error is current."
+                : "The reported raw SMART error-related counter is zero.";
+
+        if (IsDriveCapacityReading(reading))
+            return reading.Name.Contains("Used Space", StringComparison.OrdinalIgnoreCase)
+                ? "Drive capacity used. This is not disk activity or workload."
+                : "Drive capacity information. This is not disk activity or workload.";
 
         if (reading.Type == "Temperature")
         {
@@ -3031,6 +3114,14 @@ public partial class MainWindow : Window
         };
     }
 
+    private static string UnitFor(ISensor sensor)
+    {
+        if (sensor.Hardware.HardwareType == HardwareType.Storage
+            && sensor.Name.Contains("Latency", StringComparison.OrdinalIgnoreCase))
+            return "ms";
+        return UnitFor(sensor.SensorType);
+    }
+
     private static string UnitFor(string sensorType, string displayValue)
     {
         string text = $"{sensorType} {displayValue}".ToLowerInvariant();
@@ -3068,6 +3159,13 @@ public partial class MainWindow : Window
 
     private static string ColorFor(SensorReading reading)
     {
+        if (reading.Type == "Health")
+            return reading.Value < 0 ? "#9aa8b8" : reading.Value >= 1 ? "#33d17a" : "#ff5c77";
+        if (reading.Type == "SMART")
+            return reading.Value > 0 ? "#f6c85f" : "#33d17a";
+        if (IsDriveCapacityReading(reading))
+            return reading.Name.Contains("Used Space", StringComparison.OrdinalIgnoreCase) && reading.Value >= 95 ? "#f6c85f" : "#5dade2";
+
         if (reading.Type == "Temperature")
         {
             if (reading.Value >= 90) return "#ff5c77";
@@ -3107,9 +3205,10 @@ public sealed record SensorReading(
     double Value,
     string Unit,
     string Identifier,
-    string HardwareType)
+    string HardwareType,
+    string? DisplayOverride = null)
 {
-    public string DisplayValue => MainWindowDisplay.Format(Value, Unit);
+    public string DisplayValue => DisplayOverride ?? MainWindowDisplay.Format(Value, Unit);
 }
 
 public sealed record CategoryView(
