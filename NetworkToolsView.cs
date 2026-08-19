@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.NetworkInformation;
@@ -30,6 +31,7 @@ internal sealed class NetworkToolsView : IDisposable
     private readonly ObservableCollection<ConnectionRow> connections = [];
     private readonly ObservableCollection<PortRow> ports = [];
     private readonly ObservableCollection<DeviceRow> devices = [];
+    private readonly ComboBox discoveryAdapter = InputCombo();
     private readonly ObservableCollection<PacketRow> packets = [];
     private readonly ObservableCollection<ProtocolRow> protocols = [];
     private readonly ObservableCollection<DeviceBandwidthRow> deviceBandwidth = [];
@@ -121,17 +123,31 @@ internal sealed class NetworkToolsView : IDisposable
     private UIElement CreateDiscovery()
     {
         var subnet = Input(DefaultSubnet());
+        var filter = Input("");
         var status = Status();
         var grid = GridFor(devices);
         AddColumn(grid, "IP address", "Address", 140);
         AddColumn(grid, "Hostname", "Hostname", 220);
         AddColumn(grid, "MAC address", "Mac", 160);
+        AddColumn(grid, "Vendor clue", "Vendor", 150);
         AddColumn(grid, "Likely device", "DeviceType", 150);
         AddColumn(grid, "Latency", "Latency", 90);
         AddColumn(grid, "Services", "Services", 260);
+        var view = CollectionViewSource.GetDefaultView(devices);
+        filter.TextChanged += (_, _) =>
+        {
+            string search = filter.Text.Trim();
+            view.Filter = item => item is DeviceRow row && (search.Length == 0 || $"{row.Address} {row.Hostname} {row.Mac} {row.Vendor} {row.DeviceType} {row.Services}".Contains(search, StringComparison.OrdinalIgnoreCase));
+        };
+        LoadDiscoveryAdapters(subnet);
+        discoveryAdapter.SelectionChanged += (_, _) =>
+        {
+            if (discoveryAdapter.SelectedItem is ComboBoxItem { Tag: NetworkScanTarget selected }) subnet.Text = selected.Range;
+        };
         var start = Action("Discover Devices", async () => await Discover(subnet.Text, status));
         var cancel = Action("Cancel", () => scanCancellation?.Cancel());
-        return Page("Private Network Device Discovery", "Scans one private IPv4 /24 subnet using ping and a short list of common service ports. Nothing runs automatically.", Row(Labeled("Subnet", subnet), start, cancel), status, grid);
+        var export = Action("Export CSV", () => ExportDevices(status));
+        return Page("Wireless / LAN Device Scanner", "Scans the selected Wi-Fi or Ethernet subnet using ping, the Windows ARP table, reverse DNS, and common service probes. Enter a private CIDR or range such as 10.0.0.0/24 or 10.0.0.1-10.0.0.100. Nothing runs automatically.", Row(Labeled("Network adapter", discoveryAdapter), Labeled("Private subnet or range", subnet), start, cancel, export), Row(Labeled("Filter results", filter)), status, grid);
     }
 
     private UIElement CreateCapture()
@@ -299,40 +315,78 @@ internal sealed class NetworkToolsView : IDisposable
         CancellationToken token = scanCancellation.Token;
         try
         {
-            string prefix = ValidatePrivate24(subnetText);
-            status.Text = $"Discovering {prefix}1–254...";
-            using var gate = new SemaphoreSlim(32);
-            var found = new ConcurrentBag<(IPAddress Address, long Latency)>();
-            var tasks = Enumerable.Range(1, 254).Select(async last =>
+            IPAddress[] targets = ParsePrivateRange(subnetText);
+            status.Text = $"Scanning {targets.Length:N0} private address(es)...";
+            using var gate = new SemaphoreSlim(48);
+            var found = new ConcurrentDictionary<string, long?>();
+            var tasks = targets.Select(async address =>
             {
                 await gate.WaitAsync(token);
                 try
                 {
-                    var address = IPAddress.Parse(prefix + last);
                     using var ping = new Ping();
-                    PingReply reply = await ping.SendPingAsync(address, 450);
-                    if (reply.Status == IPStatus.Success) found.Add((address, reply.RoundtripTime));
+                    PingReply reply = await ping.SendPingAsync(address, 350);
+                    if (reply.Status == IPStatus.Success)
+                    {
+                        found[address.ToString()] = reply.RoundtripTime;
+                        return;
+                    }
+
+                    int[] discoveryPorts = [22, 80, 443, 445];
+                    PortRow[] probes = await Task.WhenAll(discoveryPorts.Select(port => CheckPort(address, port, token, 160)));
+                    if (probes.Any(row => row.Status == "Open")) found[address.ToString()] = null;
                 }
                 catch { }
                 finally { gate.Release(); }
             });
             await Task.WhenAll(tasks);
             var arp = ReadArpTable();
-            foreach (var item in found.OrderBy(item => item.Address.ToString(), StringComparer.OrdinalIgnoreCase))
+            foreach (string address in arp.Keys.Where(ip => targets.Any(target => target.ToString() == ip))) found.TryAdd(address, null);
+            foreach (var item in found.OrderBy(item => IpNumber(IPAddress.Parse(item.Key))))
             {
                 token.ThrowIfCancellationRequested();
+                IPAddress address = IPAddress.Parse(item.Key);
                 string hostname = "";
-                try { hostname = (await Dns.GetHostEntryAsync(item.Address)).HostName; } catch { }
+                try { hostname = (await Dns.GetHostEntryAsync(address)).HostName; } catch { }
                 int[] common = [22, 53, 80, 139, 443, 445, 554, 631, 3389, 5900, 8080, 9100];
-                PortRow[] checks = await Task.WhenAll(common.Select(port => CheckPort(item.Address, port, token, 220)));
+                PortRow[] checks = await Task.WhenAll(common.Select(port => CheckPort(address, port, token, 220)));
                 string services = string.Join(", ", checks.Where(row => row.Status == "Open").Select(row => row.Service));
-                devices.Add(new(item.Address.ToString(), hostname, arp.GetValueOrDefault(item.Address.ToString(), ""), InferDeviceType(item.Address, hostname, checks), item.Latency + " ms", services));
+                string mac = arp.GetValueOrDefault(item.Key, "");
+                devices.Add(new(item.Key, hostname, mac, VendorClue(mac), InferDeviceType(address, hostname, checks), item.Value.HasValue ? item.Value + " ms" : "Detected", services));
                 status.Text = $"Found {devices.Count} responding device(s)...";
             }
-            status.Text = $"Discovery complete: {devices.Count} responding device(s).";
+            status.Text = $"Scan complete: {devices.Count} device(s) detected across {targets.Length:N0} address(es). Devices may be wired or wireless; Windows cannot reliably identify that connection type for another client.";
         }
         catch (OperationCanceledException) { status.Text = $"Discovery cancelled; {devices.Count} device(s) retained."; }
         catch (Exception exception) { status.Text = exception.Message; }
+    }
+
+    private void LoadDiscoveryAdapters(TextBox range)
+    {
+        discoveryAdapter.Items.Clear();
+        foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces().Where(item => item.OperationalStatus == OperationalStatus.Up))
+        {
+            foreach (UnicastIPAddressInformation address in nic.GetIPProperties().UnicastAddresses.Where(item => item.Address.AddressFamily == AddressFamily.InterNetwork && IsPrivate(item.Address)))
+            {
+                int prefix = address.PrefixLength is >= 20 and <= 30 ? address.PrefixLength : 24;
+                string cidr = NetworkCidr(address.Address, prefix);
+                string kind = nic.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? "Wi-Fi" : nic.NetworkInterfaceType.ToString();
+                discoveryAdapter.Items.Add(new ComboBoxItem { Content = $"{nic.Name} ({kind}) — {address.Address}", Tag = new NetworkScanTarget(cidr) });
+            }
+        }
+        discoveryAdapter.SelectedIndex = discoveryAdapter.Items.Count > 0 ? 0 : -1;
+        if (discoveryAdapter.SelectedItem is ComboBoxItem { Tag: NetworkScanTarget selected }) range.Text = selected.Range;
+    }
+
+    private void ExportDevices(TextBlock status)
+    {
+        if (devices.Count == 0) { status.Text = "Scan for devices before exporting."; return; }
+        var dialog = new SaveFileDialog { Title = "Export network devices", Filter = "CSV files (*.csv)|*.csv", DefaultExt = ".csv", AddExtension = true, FileName = $"network-devices-{DateTime.Now:yyyyMMdd-HHmmss}.csv" };
+        if (dialog.ShowDialog() != true) return;
+        var lines = new List<string> { "IP Address,Hostname,MAC Address,Vendor Clue,Likely Device,Latency,Services" };
+        lines.AddRange(devices.Select(row => string.Join(",", Csv(row.Address), Csv(row.Hostname), Csv(row.Mac), Csv(row.Vendor), Csv(row.DeviceType), Csv(row.Latency), Csv(row.Services))));
+        File.WriteAllLines(dialog.FileName, lines, new UTF8Encoding(true));
+        status.Text = $"Exported {devices.Count} device(s) to {dialog.FileName}.";
     }
 
     private void LoadCaptureAdapters()
@@ -568,13 +622,57 @@ internal sealed class NetworkToolsView : IDisposable
         return address;
     }
 
-    private static string ValidatePrivate24(string text)
+    private static IPAddress[] ParsePrivateRange(string text)
     {
-        Match match = Regex.Match(text.Trim(), @"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(?:0|\*)\s*(?:/24)?$");
-        if (!match.Success) throw new InvalidOperationException("Enter a private /24 subnet such as 192.168.1.0/24.");
-        var address = IPAddress.Parse($"{match.Groups[1]}.{match.Groups[2]}.{match.Groups[3]}.1");
-        if (!IsPrivate(address)) throw new InvalidOperationException("Only private IPv4 subnets are allowed.");
-        return $"{match.Groups[1]}.{match.Groups[2]}.{match.Groups[3]}.";
+        string value = text.Trim();
+        uint start;
+        uint end;
+        Match range = Regex.Match(value, @"^(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3})$");
+        if (range.Success)
+        {
+            IPAddress first = ParsePrivateIpv4(range.Groups[1].Value);
+            IPAddress last = ParsePrivateIpv4(range.Groups[2].Value);
+            start = IpNumber(first);
+            end = IpNumber(last);
+        }
+        else
+        {
+            Match cidr = Regex.Match(value, @"^(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2}))?$");
+            if (!cidr.Success) throw new InvalidOperationException("Enter a private CIDR or range, such as 10.0.0.0/24 or 10.0.0.1-10.0.0.100.");
+            IPAddress address = ParsePrivateIpv4(cidr.Groups[1].Value);
+            int prefix = cidr.Groups[2].Success && int.TryParse(cidr.Groups[2].Value, out int parsed) ? parsed : 24;
+            if (prefix is < 16 or > 30) throw new InvalidOperationException("Use a prefix from /16 through /30.");
+            uint mask = uint.MaxValue << (32 - prefix);
+            uint network = IpNumber(address) & mask;
+            start = network + 1;
+            end = (network | ~mask) - 1;
+        }
+
+        if (end < start) throw new InvalidOperationException("The ending address must be after the starting address.");
+        ulong count = (ulong)end - start + 1;
+        if (count > 4096) throw new InvalidOperationException("For safety and responsiveness, scan no more than 4,096 private addresses at once.");
+        return Enumerable.Range(0, (int)count).Select(offset => AddressFromNumber(start + (uint)offset)).ToArray();
+    }
+
+    private static IPAddress ParsePrivateIpv4(string text)
+    {
+        if (!IPAddress.TryParse(text, out IPAddress? address) || address.AddressFamily != AddressFamily.InterNetwork || !IsPrivate(address))
+            throw new InvalidOperationException("Only private IPv4 addresses are allowed.");
+        return address;
+    }
+
+    private static uint IpNumber(IPAddress address)
+    {
+        byte[] bytes = address.GetAddressBytes();
+        return ((uint)bytes[0] << 24) | ((uint)bytes[1] << 16) | ((uint)bytes[2] << 8) | bytes[3];
+    }
+
+    private static IPAddress AddressFromNumber(uint value) => new([(byte)(value >> 24), (byte)(value >> 16), (byte)(value >> 8), (byte)value]);
+
+    private static string NetworkCidr(IPAddress address, int prefix)
+    {
+        uint mask = uint.MaxValue << (32 - prefix);
+        return $"{AddressFromNumber(IpNumber(address) & mask)}/{prefix}";
     }
 
     private static bool IsPrivate(IPAddress address)
@@ -631,6 +729,29 @@ internal sealed class NetworkToolsView : IDisposable
         if (open.Contains(80) || open.Contains(443) || open.Contains(8080)) return "Web appliance";
         return "Network device";
     }
+
+    private static string VendorClue(string mac)
+    {
+        string oui = mac.Replace("-", "").Replace(":", "").ToUpperInvariant();
+        if (oui.Length < 6) return "";
+        if ((Convert.ToByte(oui[..2], 16) & 2) != 0) return "Private/randomized MAC";
+        return oui[..6] switch
+        {
+            "0836C9" => "NETGEAR",
+            "001B2F" or "0024B2" or "9CDC71" => "NETGEAR",
+            "001A11" or "3C5AB4" or "F4F5D8" => "Google",
+            "0017F2" or "3C22FB" or "F0B479" => "Apple",
+            "001E58" or "0026B0" or "D850E6" => "Samsung",
+            "001A2B" or "B827EB" or "DCA632" => "Raspberry Pi",
+            "001D7E" or "18B430" or "84F3EB" => "Amazon",
+            "001788" or "ECFABC" => "Philips Hue",
+            "001A22" or "485D36" => "eero",
+            "001E8C" or "F4F26D" => "ASUSTek",
+            _ => "Unknown"
+        };
+    }
+
+    private static string Csv(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
 
     private static Dictionary<string, string> ReadArpTable()
     {
@@ -711,7 +832,8 @@ internal sealed class NetworkToolsView : IDisposable
 
     private sealed record ConnectionRow(string Protocol, string Local, string Remote, string State);
     private sealed record PortRow(int Port, string Service, string Status, string Latency);
-    private sealed record DeviceRow(string Address, string Hostname, string Mac, string DeviceType, string Latency, string Services);
+    private sealed record DeviceRow(string Address, string Hostname, string Mac, string Vendor, string DeviceType, string Latency, string Services);
+    private sealed record NetworkScanTarget(string Range);
     private sealed record PacketRow(long Number, string Time, string Protocol, string Source, string Destination, int Length, string Details);
     private sealed record ProtocolRow(string Protocol, long Packets, long Bytes);
     private sealed record DeviceBandwidthRow(string Address, string DownloadRate, string UploadRate, string Total, string Coverage);
