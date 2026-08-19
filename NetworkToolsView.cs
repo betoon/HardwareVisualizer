@@ -11,7 +11,9 @@ using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Documents;
 using System.Windows.Media;
+using System.Windows.Navigation;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using PacketDotNet;
@@ -133,11 +135,13 @@ internal sealed class NetworkToolsView : IDisposable
         AddColumn(grid, "Likely device", "DeviceType", 150);
         AddColumn(grid, "Latency", "Latency", 90);
         AddColumn(grid, "Services", "Services", 260);
+        grid.Columns.Add(new DataGridHyperlinkColumn { Header = "Web page", Binding = new Binding(nameof(DeviceRow.Website)), ContentBinding = new Binding(nameof(DeviceRow.Website)), Width = 220 });
+        grid.AddHandler(Hyperlink.RequestNavigateEvent, new RequestNavigateEventHandler((_, args) => OpenDeviceWebsite(args, status)));
         var view = CollectionViewSource.GetDefaultView(devices);
         filter.TextChanged += (_, _) =>
         {
             string search = filter.Text.Trim();
-            view.Filter = item => item is DeviceRow row && (search.Length == 0 || $"{row.Address} {row.Hostname} {row.Mac} {row.Vendor} {row.DeviceType} {row.Services}".Contains(search, StringComparison.OrdinalIgnoreCase));
+            view.Filter = item => item is DeviceRow row && (search.Length == 0 || $"{row.Address} {row.Hostname} {row.Mac} {row.Vendor} {row.DeviceType} {row.Services} {row.Website}".Contains(search, StringComparison.OrdinalIgnoreCase));
         };
         LoadDiscoveryAdapters(subnet);
         discoveryAdapter.SelectionChanged += (_, _) =>
@@ -352,7 +356,7 @@ internal sealed class NetworkToolsView : IDisposable
                 PortRow[] checks = await Task.WhenAll(common.Select(port => CheckPort(address, port, token, 220)));
                 string services = string.Join(", ", checks.Where(row => row.Status == "Open").Select(row => row.Service));
                 string mac = arp.GetValueOrDefault(item.Key, "");
-                devices.Add(new(item.Key, hostname, mac, VendorClue(mac), InferDeviceType(address, hostname, checks), item.Value.HasValue ? item.Value + " ms" : "Detected", services));
+                devices.Add(new(item.Key, hostname, mac, VendorClue(mac), InferDeviceType(address, hostname, checks), item.Value.HasValue ? item.Value + " ms" : "Detected", services, WebAddress(address, checks)));
                 status.Text = $"Found {devices.Count} responding device(s)...";
             }
             status.Text = $"Scan complete: {devices.Count} device(s) detected across {targets.Length:N0} address(es). Devices may be wired or wireless; Windows cannot reliably identify that connection type for another client.";
@@ -383,10 +387,33 @@ internal sealed class NetworkToolsView : IDisposable
         if (devices.Count == 0) { status.Text = "Scan for devices before exporting."; return; }
         var dialog = new SaveFileDialog { Title = "Export network devices", Filter = "CSV files (*.csv)|*.csv", DefaultExt = ".csv", AddExtension = true, FileName = $"network-devices-{DateTime.Now:yyyyMMdd-HHmmss}.csv" };
         if (dialog.ShowDialog() != true) return;
-        var lines = new List<string> { "IP Address,Hostname,MAC Address,Vendor Clue,Likely Device,Latency,Services" };
-        lines.AddRange(devices.Select(row => string.Join(",", Csv(row.Address), Csv(row.Hostname), Csv(row.Mac), Csv(row.Vendor), Csv(row.DeviceType), Csv(row.Latency), Csv(row.Services))));
+        var lines = new List<string> { "IP Address,Hostname,MAC Address,Vendor Clue,Likely Device,Latency,Services,Web Page" };
+        lines.AddRange(devices.Select(row => string.Join(",", Csv(row.Address), Csv(row.Hostname), Csv(row.Mac), Csv(row.Vendor), Csv(row.DeviceType), Csv(row.Latency), Csv(row.Services), Csv(row.Website))));
         File.WriteAllLines(dialog.FileName, lines, new UTF8Encoding(true));
         status.Text = $"Exported {devices.Count} device(s) to {dialog.FileName}.";
+    }
+
+    private static string WebAddress(IPAddress address, IEnumerable<PortRow> checks)
+    {
+        HashSet<int> open = checks.Where(row => row.Status == "Open").Select(row => row.Port).ToHashSet();
+        if (open.Contains(443)) return $"https://{address}/";
+        if (open.Contains(80)) return $"http://{address}/";
+        if (open.Contains(8080)) return $"http://{address}:8080/";
+        if (open.Contains(631)) return $"http://{address}:631/";
+        return "";
+    }
+
+    private static void OpenDeviceWebsite(RequestNavigateEventArgs args, TextBlock status)
+    {
+        args.Handled = true;
+        try
+        {
+            if (!IPAddress.TryParse(args.Uri.Host, out IPAddress? address) || !IsPrivate(address))
+                throw new InvalidOperationException("Only private-network device pages can be opened from the scanner.");
+            Process.Start(new ProcessStartInfo(args.Uri.AbsoluteUri) { UseShellExecute = true });
+            status.Text = $"Opened {args.Uri.AbsoluteUri} in the default browser.";
+        }
+        catch (Exception exception) { status.Text = $"Could not open the device page: {exception.Message}"; }
     }
 
     private void LoadCaptureAdapters()
@@ -832,7 +859,7 @@ internal sealed class NetworkToolsView : IDisposable
 
     private sealed record ConnectionRow(string Protocol, string Local, string Remote, string State);
     private sealed record PortRow(int Port, string Service, string Status, string Latency);
-    private sealed record DeviceRow(string Address, string Hostname, string Mac, string Vendor, string DeviceType, string Latency, string Services);
+    private sealed record DeviceRow(string Address, string Hostname, string Mac, string Vendor, string DeviceType, string Latency, string Services, string Website);
     private sealed record NetworkScanTarget(string Range);
     private sealed record PacketRow(long Number, string Time, string Protocol, string Source, string Destination, int Length, string Details);
     private sealed record ProtocolRow(string Protocol, long Packets, long Bytes);
